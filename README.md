@@ -1,4 +1,4 @@
-# OLAP Workload Database Showdown
+# ClickBench Showdown
 
 A live benchmarking dashboard that compares **ClickHouse 26.3** against **PostgreSQL 17** using the industry-standard [ClickBench](https://clickbench.org) benchmark — 43 analytical queries run continuously against the `hits` web analytics dataset.
 
