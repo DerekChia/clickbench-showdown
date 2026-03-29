@@ -1,0 +1,17 @@
+# Parquet cache — downloaded at runtime, not part of source
+tmp/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# macOS
+.DS_Store
+
+# Editor
+.idea/
+.vscode/
+*.swp

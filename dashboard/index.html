@@ -1,0 +1,1244 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>OLAP Workload Database Showdown — IS459</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"/>
+<link href="https://fonts.googleapis.com/css2?family=DM+Serif+Display&family=DM+Sans:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet"/>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<style>
+  :root {
+    --bg:     #111B26;
+    --panel:  #18242F;
+    --card:   #1E2E3D;
+    --bdr:    #2A3F55;
+    --teal:   #4ABFB8;   /* ClickHouse */
+    --blue:   #5B9BD5;   /* PostgreSQL */
+    --amber:  #E8A87C;
+    --green:  #4ADA90;
+    --red:    #E87C7C;
+    --yellow: #E8D07C;
+    --mu:     #6A8BA8;
+    --txt:    #E8E2D9;
+    --mono:   'JetBrains Mono', monospace;
+    --serif:  'DM Serif Display', serif;
+    --sans:   'DM Sans', sans-serif;
+  }
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  html { font-size: 14px; }
+  body {
+    background: var(--bg);
+    color: var(--txt);
+    font-family: var(--sans);
+    min-height: 100vh;
+    padding: 0 0 40px;
+  }
+
+  /* ── Header ─────────────────────────────────────────────────────────────── */
+  header {
+    background: var(--panel);
+    border-bottom: 1px solid var(--bdr);
+    padding: 16px 28px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    position: sticky;
+    top: 0;
+    z-index: 100;
+  }
+  .header-left h1 {
+    font-family: var(--serif);
+    font-size: 1.45rem;
+    letter-spacing: .01em;
+    color: var(--txt);
+  }
+  .header-left p {
+    font-size: .75rem;
+    color: var(--mu);
+    font-family: var(--mono);
+    margin-top: 2px;
+  }
+  .header-right {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+
+  /* ── Status dot ─────────────────────────────────────────────────────────── */
+  .dot {
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    background: var(--mu);
+    display: inline-block;
+  }
+  .dot.live { background: var(--green); animation: pulse 2s infinite; }
+  @keyframes pulse {
+    0%,100% { box-shadow: 0 0 0 0 rgba(74,218,144,.5); }
+    50%      { box-shadow: 0 0 0 5px rgba(74,218,144,0); }
+  }
+
+  /* ── Buttons ─────────────────────────────────────────────────────────────── */
+  button {
+    font-family: var(--sans);
+    font-size: .8rem;
+    font-weight: 600;
+    border: none;
+    border-radius: 6px;
+    padding: 8px 18px;
+    cursor: pointer;
+    transition: opacity .15s, transform .1s;
+  }
+  button:active { transform: scale(.97); }
+  button:disabled { opacity: .4; cursor: not-allowed; transform: none; }
+  .btn-start { background: var(--teal); color: #0D1B26; }
+  .btn-stop  { background: var(--red);  color: #0D1B26; }
+
+  /* ── Main layout ─────────────────────────────────────────────────────────── */
+  main { max-width: 1400px; margin: 0 auto; padding: 20px 24px; }
+
+  /* ── Loader banner ───────────────────────────────────────────────────────── */
+  #loader-banner {
+    background: var(--card);
+    border: 1px solid var(--bdr);
+    border-left: 3px solid var(--amber);
+    border-radius: 8px;
+    padding: 14px 18px;
+    margin-bottom: 18px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+  #loader-banner .spinner {
+    width: 16px; height: 16px;
+    border: 2px solid var(--bdr);
+    border-top-color: var(--amber);
+    border-radius: 50%;
+    animation: spin 1s linear infinite;
+    flex-shrink: 0;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  #loader-banner p { font-size: .82rem; color: var(--amber); font-family: var(--mono); }
+  #loader-banner.ready { border-left-color: var(--green); display: none; }
+
+  /* ── Summary cards ───────────────────────────────────────────────────────── */
+  .summary-grid {
+    display: grid;
+    grid-template-columns: repeat(5, 1fr);
+    gap: 12px;
+    margin-bottom: 18px;
+  }
+  .summary-card {
+    background: var(--card);
+    border: 1px solid var(--bdr);
+    border-radius: 10px;
+    padding: 14px 16px;
+  }
+  .summary-card .label {
+    font-size: .7rem;
+    font-family: var(--mono);
+    color: var(--mu);
+    text-transform: uppercase;
+    letter-spacing: .08em;
+    margin-bottom: 6px;
+  }
+  .summary-card .value {
+    font-family: var(--serif);
+    font-size: 1.5rem;
+    line-height: 1;
+  }
+  .summary-card .sub {
+    font-size: .7rem;
+    color: var(--mu);
+    margin-top: 4px;
+  }
+
+  /* ── Legend ──────────────────────────────────────────────────────────────── */
+  .legend {
+    display: flex;
+    align-items: center;
+    gap: 20px;
+    margin-bottom: 16px;
+  }
+  .legend-item {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: .78rem;
+    color: var(--mu);
+    font-family: var(--mono);
+  }
+  .legend-swatch {
+    width: 10px; height: 10px;
+    border-radius: 2px;
+  }
+
+  /* ── Query table ─────────────────────────────────────────────────────────── */
+  .table-wrap {
+    background: var(--panel);
+    border: 1px solid var(--bdr);
+    border-radius: 10px;
+    overflow: hidden;
+    margin-bottom: 20px;
+  }
+  .table-header-bar {
+    padding: 14px 18px;
+    border-bottom: 1px solid var(--bdr);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+  .table-header-bar h2 {
+    font-family: var(--mono);
+    font-size: .78rem;
+    text-transform: uppercase;
+    letter-spacing: .1em;
+    color: var(--mu);
+  }
+  .col-hint {
+    font-size: .68rem;
+    font-family: var(--mono);
+    color: var(--mu);
+  }
+
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: .78rem;
+  }
+  thead th {
+    padding: 8px 12px;
+    text-align: left;
+    font-family: var(--mono);
+    font-size: .68rem;
+    font-weight: 500;
+    text-transform: uppercase;
+    letter-spacing: .08em;
+    color: var(--mu);
+    border-bottom: 1px solid var(--bdr);
+    background: var(--panel);
+    white-space: nowrap;
+  }
+  thead th.ch  { color: var(--teal); }
+  thead th.pg  { color: var(--blue); }
+  thead th.ctr { text-align: center; }
+  thead th.rt  { text-align: right; }
+
+  tbody tr.data-row {
+    border-bottom: 1px solid rgba(42,63,85,.5);
+    transition: background .1s;
+    cursor: pointer;
+  }
+  tbody tr.data-row:hover { background: rgba(74,191,184,.06); }
+  tbody tr.data-row.active-ch { background: rgba(74,191,184,.08); }
+  tbody tr.data-row.active-pg { background: rgba(91,155,213,.08); }
+  tbody tr.expand-row { display: none; border-bottom: 1px solid var(--bdr); }
+  tbody tr.expand-row.open { display: table-row; }
+
+  td {
+    padding: 8px 12px;
+    vertical-align: middle;
+  }
+  td.qnum {
+    font-family: var(--mono);
+    font-size: .72rem;
+    color: var(--mu);
+    white-space: nowrap;
+    width: 36px;
+  }
+  td.qlabel {
+    max-width: 220px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--txt);
+  }
+  td.time-cell {
+    text-align: right;
+    font-family: var(--mono);
+    white-space: nowrap;
+    width: 80px;
+  }
+  td.runs-cell {
+    text-align: center;
+    font-family: var(--mono);
+    font-size: .72rem;
+    color: var(--mu);
+    width: 48px;
+  }
+  td.speedup-cell {
+    text-align: center;
+    font-family: var(--mono);
+    font-size: .78rem;
+    font-weight: 600;
+    width: 72px;
+  }
+  td.status-cell { width: 24px; text-align: center; }
+
+  /* time colours */
+  .t-fast    { color: var(--green); }
+  .t-med     { color: var(--yellow); }
+  .t-slow    { color: var(--amber); }
+  .t-timeout { color: var(--red); }
+  .t-pending { color: var(--mu); }
+  .t-running { color: var(--teal); animation: blink 1s ease-in-out infinite; }
+  @keyframes blink { 0%,100% { opacity:1; } 50% { opacity:.4; } }
+
+  /* speedup badge */
+  .spd-fast { color: var(--green); }
+  .spd-med  { color: var(--yellow); }
+  .spd-huge { color: var(--teal); font-weight: 700; }
+  .spd-na   { color: var(--mu); }
+
+  /* status icons */
+  .ic-ok      { color: var(--green); }
+  .ic-run     { color: var(--teal); animation: blink 1s ease-in-out infinite; }
+  .ic-timeout { color: var(--red); }
+  .ic-error   { color: var(--amber); }
+  .ic-pending { color: var(--mu); }
+
+  /* percentile bar mini-viz */
+  .pct-bars {
+    display: flex;
+    align-items: flex-end;
+    gap: 2px;
+    height: 18px;
+    justify-content: flex-end;
+  }
+  .pct-bar {
+    width: 6px;
+    border-radius: 2px 2px 0 0;
+    min-height: 2px;
+    max-height: 18px;
+  }
+
+  /* ── Chart panel ─────────────────────────────────────────────────────────── */
+  .chart-panel {
+    background: var(--panel);
+    border: 1px solid var(--bdr);
+    border-radius: 10px;
+    padding: 18px;
+  }
+  .chart-panel h2 {
+    font-family: var(--mono);
+    font-size: .78rem;
+    text-transform: uppercase;
+    letter-spacing: .1em;
+    color: var(--mu);
+    margin-bottom: 14px;
+  }
+  canvas#speedupChart { max-height: 240px; }
+
+  /* ── Expandable detail row ───────────────────────────────────────────────── */
+  .expand-inner {
+    padding: 16px 20px 20px;
+    background: #0D1B26;
+  }
+  .sql-db-label {
+    font-size: .65rem;
+    font-family: var(--mono);
+    text-transform: uppercase;
+    letter-spacing: .1em;
+    font-weight: 600;
+    margin-bottom: 4px;
+  }
+  .sql-db-label.ch { color: var(--teal); }
+  .sql-db-label.pg { color: var(--blue); }
+  .sql-db-label.all { color: var(--mu); }
+  .sql-block-wrap {
+    position: relative;
+    margin-bottom: 6px;
+  }
+  .sql-block {
+    background: var(--card);
+    border: 1px solid var(--bdr);
+    border-radius: 6px;
+    padding: 10px 36px 10px 14px;
+    font-size: .72rem;
+    font-family: var(--mono);
+    color: var(--txt);
+    white-space: pre-wrap;
+    word-break: break-word;
+    line-height: 1.6;
+  }
+  .btn-copy {
+    position: absolute;
+    top: 6px;
+    right: 7px;
+    font-size: .6rem;
+    font-family: var(--mono);
+    padding: 2px 7px;
+    background: var(--bdr);
+    color: var(--mu);
+    border: 1px solid #3a526a;
+    border-radius: 4px;
+    cursor: pointer;
+    transition: background .15s, color .15s;
+  }
+  .btn-copy:hover { background: #2a3f55; color: var(--fg); }
+  .expand-charts {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 14px;
+    margin-top: 14px;
+  }
+  .expand-chart-box {
+    background: var(--card);
+    border: 1px solid var(--bdr);
+    border-radius: 6px;
+    padding: 12px;
+  }
+  .expand-chart-box h4 {
+    font-size: .68rem;
+    font-family: var(--mono);
+    color: var(--mu);
+    text-transform: uppercase;
+    letter-spacing: .08em;
+    margin-bottom: 10px;
+  }
+  .expand-chart-box canvas { max-height: 180px; }
+
+  /* ── Dataset reload controls (header) ───────────────────────────────────── */
+  .files-select {
+    background: var(--panel);
+    color: var(--txt);
+    border: 1px solid var(--bdr);
+    border-radius: 4px;
+    padding: 5px 10px;
+    font-family: var(--mono);
+    font-size: .78rem;
+    cursor: pointer;
+  }
+  .files-select:focus { outline: none; border-color: var(--teal); }
+  .btn-reload {
+    background: transparent;
+    color: var(--teal);
+    border: 1px solid var(--teal);
+    border-radius: 6px;
+    padding: 5px 14px;
+    font-size: .78rem;
+    white-space: nowrap;
+  }
+  .btn-reload:hover:not(:disabled) { background: rgba(74,191,184,.1); }
+  .reload-msg {
+    font-size: .72rem;
+    font-family: var(--mono);
+    color: var(--mu);
+  }
+  .reload-msg.ok  { color: var(--green); }
+  .reload-msg.err { color: var(--red); }
+
+  /* ── Footer ──────────────────────────────────────────────────────────────── */
+  footer {
+    text-align: center;
+    font-size: .72rem;
+    color: var(--mu);
+    font-family: var(--mono);
+    margin-top: 32px;
+  }
+  footer a { color: var(--teal); text-decoration: none; }
+</style>
+</head>
+<body>
+
+<!-- ── Header ──────────────────────────────────────────────────────────────── -->
+<header>
+  <div class="header-left">
+    <h1>OLAP Workload Database Showdown</h1>
+    <p>ClickBench · 43 queries · hits dataset (5% · ~5 M rows) · IS459 Guest Lecture</p>
+  </div>
+  <div class="header-right">
+    <span id="dot" class="dot"></span>
+    <span id="run-label" style="font-size:.78rem;color:var(--mu);font-family:var(--mono)">idle</span>
+    <span id="active-db-badge" style="display:none;font-size:.72rem;font-family:var(--mono);padding:3px 10px;border-radius:4px;font-weight:600"></span>
+    <div style="width:1px;height:20px;background:var(--bdr)"></div>
+    <select id="files-select" class="files-select">
+      <option value="1">1 file · ~1 M rows</option>
+      <option value="2">2 files · ~2 M rows</option>
+      <option value="3">3 files · ~3 M rows</option>
+      <option value="4">4 files · ~4 M rows</option>
+      <option value="5" selected>5 files · ~5 M rows</option>
+      <option value="6">6 files · ~6 M rows</option>
+      <option value="7">7 files · ~7 M rows</option>
+      <option value="8">8 files · ~8 M rows</option>
+      <option value="9">9 files · ~9 M rows</option>
+      <option value="10">10 files · ~10 M rows</option>
+    </select>
+    <button id="btn-reload" class="btn-reload" onclick="reloadData()" disabled>↺ Load Data</button>
+    <span id="reload-msg" class="reload-msg"></span>
+    <div style="width:1px;height:20px;background:var(--bdr)"></div>
+    <button id="btn-start" class="btn-start" onclick="startBench()">▶ Start Benchmark</button>
+    <button id="btn-stop"  class="btn-stop"  onclick="stopBench()" disabled>■ Stop</button>
+  </div>
+</header>
+
+<main>
+
+  <!-- ── Loader banner ─────────────────────────────────────────────────────── -->
+  <div id="loader-banner">
+    <div class="spinner"></div>
+    <p id="loader-msg">Checking databases…</p>
+  </div>
+
+  <!-- ── Summary cards ─────────────────────────────────────────────────────── -->
+  <div class="summary-grid">
+    <div class="summary-card">
+      <div class="label">CH Total Runs</div>
+      <div class="value" id="ch-total" style="color:var(--teal)">—</div>
+      <div class="sub">query executions</div>
+      <div class="sub" id="ch-rows-loaded" style="margin-top:4px;color:var(--teal);opacity:.75">— rows loaded</div>
+    </div>
+    <div class="summary-card">
+      <div class="label">PG Total Runs</div>
+      <div class="value" id="pg-total" style="color:var(--blue)">—</div>
+      <div class="sub">query executions</div>
+      <div class="sub" id="pg-rows-loaded" style="margin-top:4px;color:var(--blue);opacity:.75">— rows loaded</div>
+    </div>
+    <div class="summary-card">
+      <div class="label">Avg Speedup</div>
+      <div class="value" id="avg-speedup" style="color:var(--green)">—</div>
+      <div class="sub">CH faster than PG (p50)</div>
+    </div>
+    <div class="summary-card">
+      <div class="label">CH Timeouts</div>
+      <div class="value" id="ch-timeouts" style="color:var(--red)">—</div>
+      <div class="sub">queries &gt;10 s</div>
+    </div>
+    <div class="summary-card">
+      <div class="label">PG Timeouts</div>
+      <div class="value" id="pg-timeouts" style="color:var(--red)">—</div>
+      <div class="sub">queries &gt;10 s</div>
+    </div>
+  </div>
+
+  <!-- ── Legend ────────────────────────────────────────────────────────────── -->
+  <div class="legend">
+    <div class="legend-item">
+      <div class="legend-swatch" style="background:var(--teal)"></div>
+      ClickHouse
+    </div>
+    <div class="legend-item">
+      <div class="legend-swatch" style="background:var(--blue)"></div>
+      PostgreSQL
+    </div>
+    <div class="legend-item">
+      <div class="legend-swatch" style="background:var(--green)"></div>
+      &lt; 1 s
+    </div>
+    <div class="legend-item">
+      <div class="legend-swatch" style="background:var(--yellow)"></div>
+      1–5 s
+    </div>
+    <div class="legend-item">
+      <div class="legend-swatch" style="background:var(--amber)"></div>
+      5–10 s
+    </div>
+    <div class="legend-item">
+      <div class="legend-swatch" style="background:var(--red)"></div>
+      Timeout
+    </div>
+    <div style="margin-left:auto;font-size:.72rem;font-family:var(--mono);color:var(--mu)">
+      Times shown as p50 · p90 · p99 (ms)
+    </div>
+  </div>
+
+  <!-- ── Query table ────────────────────────────────────────────────────────── -->
+  <div class="table-wrap">
+    <div class="table-header-bar">
+      <h2>ClickBench Queries — Live Results</h2>
+      <span class="col-hint">Click a row to expand SQL + charts · bars show p50/p90/p99 magnitude</span>
+    </div>
+    <div style="overflow-x:auto">
+    <table>
+      <thead>
+        <tr>
+          <th>#</th>
+          <th>Query</th>
+          <th class="ch ctr">CH<br/>status</th>
+          <th class="ch rt">CH p50</th>
+          <th class="ch rt">CH p90</th>
+          <th class="ch rt">CH p99</th>
+          <th class="ch ctr">CH runs</th>
+          <th style="width:8px"></th>
+          <th class="pg ctr">PG<br/>status</th>
+          <th class="pg rt">PG p50</th>
+          <th class="pg rt">PG p90</th>
+          <th class="pg rt">PG p99</th>
+          <th class="pg ctr">PG runs</th>
+          <th class="ctr">Speedup</th>
+        </tr>
+      </thead>
+      <tbody id="query-tbody"></tbody>
+    </table>
+    </div>
+  </div>
+
+  <!-- ── Speedup chart ──────────────────────────────────────────────────────── -->
+  <div class="chart-panel">
+    <h2>Speedup per Query — ClickHouse vs PostgreSQL (p50, ×faster)</h2>
+    <canvas id="speedupChart"></canvas>
+  </div>
+
+</main>
+
+<footer>
+  <p>
+    <a href="https://clickbench.org" target="_blank">ClickBench</a> ·
+    Dataset: <a href="https://datasets.clickhouse.com/hits_compatible/hits.tsv.gz" target="_blank">hits.tsv.gz</a> ·
+    IS459 Big Data Management · SMU
+  </p>
+</footer>
+
+<script>
+// ── Config ────────────────────────────────────────────────────────────────────
+const API = 'http://localhost:8000';
+const POLL_MS = 1000;
+
+// ── Query SQL (for tooltips) ──────────────────────────────────────────────────
+// Build Q30 programmatically (90 sum expressions)
+const _q30 = 'SELECT ' + Array.from({length:90}, (_,i) =>
+  i === 0 ? 'sum(ResolutionWidth)' : `sum(ResolutionWidth + ${i})`
+).join(', ') + ' FROM hits';
+
+// Queries that are identical for both databases — value is the SQL string.
+// Queries that differ — value is {ch: '...', pg: '...'}.
+const QUERY_SQL = [
+  // Q1–Q18: identical
+  "SELECT count(*) FROM hits",
+  "SELECT count(*) FROM hits WHERE AdvEngineID <> 0",
+  "SELECT sum(AdvEngineID), count(*), avg(ResolutionWidth) FROM hits",
+  "SELECT avg(UserID) FROM hits",
+  "SELECT count(DISTINCT UserID) FROM hits",
+  "SELECT count(DISTINCT SearchPhrase) FROM hits",
+  "SELECT min(EventDate), max(EventDate) FROM hits",
+  "SELECT AdvEngineID, count(*) FROM hits WHERE AdvEngineID <> 0 GROUP BY AdvEngineID ORDER BY count(*) DESC LIMIT 10",
+  "SELECT RegionID, count(DISTINCT UserID) AS u FROM hits GROUP BY RegionID ORDER BY u DESC LIMIT 10",
+  "SELECT RegionID, sum(AdvEngineID), count(*) AS c, avg(ResolutionWidth), count(DISTINCT UserID) FROM hits GROUP BY RegionID ORDER BY c DESC LIMIT 10",
+  "SELECT MobilePhoneModel, count(DISTINCT UserID) AS u FROM hits WHERE MobilePhoneModel <> '' GROUP BY MobilePhoneModel ORDER BY u DESC LIMIT 10",
+  "SELECT MobilePhone, MobilePhoneModel, count(DISTINCT UserID) AS u FROM hits WHERE MobilePhoneModel <> '' GROUP BY MobilePhone, MobilePhoneModel ORDER BY u DESC LIMIT 10",
+  "SELECT SearchPhrase, count(*) AS c FROM hits WHERE SearchPhrase <> '' GROUP BY SearchPhrase ORDER BY c DESC LIMIT 10",
+  "SELECT SearchPhrase, count(DISTINCT UserID) AS u FROM hits WHERE SearchPhrase <> '' GROUP BY SearchPhrase ORDER BY u DESC LIMIT 10",
+  "SELECT SearchEngineID, SearchPhrase, count(*) AS c FROM hits WHERE SearchPhrase <> '' GROUP BY SearchEngineID, SearchPhrase ORDER BY c DESC LIMIT 10",
+  "SELECT UserID, count(*) FROM hits GROUP BY UserID ORDER BY count(*) DESC LIMIT 10",
+  "SELECT UserID, SearchPhrase, count(*) FROM hits GROUP BY UserID, SearchPhrase ORDER BY count(*) DESC LIMIT 10",
+  "SELECT UserID, SearchPhrase, count(*) FROM hits GROUP BY UserID, SearchPhrase LIMIT 10",
+  // Q19: differs — toMinute() vs EXTRACT
+  {
+    ch: "SELECT UserID, toMinute(EventTime) AS m, SearchPhrase, count(*) FROM hits GROUP BY UserID, m, SearchPhrase ORDER BY count(*) DESC LIMIT 10",
+    pg: "SELECT UserID, EXTRACT(MINUTE FROM EventTime)::integer AS m, SearchPhrase, count(*) FROM hits GROUP BY UserID, m, SearchPhrase ORDER BY count(*) DESC LIMIT 10",
+  },
+  // Q20–Q28: identical
+  "SELECT UserID FROM hits WHERE UserID = 435090932899640449",
+  "SELECT count(*) FROM hits WHERE URL LIKE '%google%'",
+  "SELECT SearchPhrase, min(URL), count(*) AS c FROM hits WHERE URL LIKE '%google%' AND SearchPhrase <> '' GROUP BY SearchPhrase ORDER BY c DESC LIMIT 10",
+  "SELECT SearchPhrase, min(URL), min(Title), count(*) AS c, count(DISTINCT UserID) FROM hits WHERE Title LIKE '%Google%' AND URL NOT LIKE '%.google.%' AND SearchPhrase <> '' GROUP BY SearchPhrase ORDER BY c DESC LIMIT 10",
+  {
+    ch: "SELECT * FROM hits WHERE URL LIKE '%google%' ORDER BY EventTime LIMIT 10",
+    pg: "SELECT WatchID, JavaEnable, Title, GoodEvent, EventTime, EventDate, CounterID, ClientIP, RegionID, UserID, OS, UserAgent, URL, Referer, IsRefresh, ResolutionWidth, ResolutionHeight, MobilePhoneModel, SearchPhrase, AdvEngineID, WindowClientWidth, WindowClientHeight, PageCharset, IsLink, IsDownload, IsNotBounce, URLHash FROM hits WHERE URL LIKE '%google%' ORDER BY EventTime LIMIT 10",
+  },
+  "SELECT SearchPhrase FROM hits WHERE SearchPhrase <> '' ORDER BY EventTime LIMIT 10",
+  "SELECT SearchPhrase FROM hits WHERE SearchPhrase <> '' ORDER BY SearchPhrase LIMIT 10",
+  "SELECT SearchPhrase FROM hits WHERE SearchPhrase <> '' ORDER BY EventTime, SearchPhrase LIMIT 10",
+  "SELECT CounterID, avg(length(URL)) AS l, count(*) AS c FROM hits WHERE URL <> '' GROUP BY CounterID HAVING count(*) > 100000 ORDER BY l DESC LIMIT 25",
+  // Q29: differs — replaceRegexpOne vs REGEXP_REPLACE
+  {
+    ch: "SELECT replaceRegexpOne(Referer, '^https?://(?:www\\.)?([^/]+)/.*$', '\\1') AS k, avg(length(Referer)) AS l, count(*) AS c, min(Referer) FROM hits WHERE Referer <> '' GROUP BY k HAVING count(*) > 100000 ORDER BY l DESC LIMIT 25",
+    pg: "SELECT REGEXP_REPLACE(Referer, '^https?://(?:www\\.)?([^/]+)/.*$', '\\1') AS k, avg(length(Referer)) AS l, count(*) AS c, min(Referer) FROM hits WHERE Referer <> '' GROUP BY k HAVING count(*) > 100000 ORDER BY l DESC LIMIT 25",
+  },
+  // Q30–Q42: identical
+  _q30,
+  "SELECT SearchEngineID, ClientIP, count(*) AS c, sum(IsRefresh), avg(ResolutionWidth) FROM hits WHERE SearchPhrase <> '' GROUP BY SearchEngineID, ClientIP ORDER BY c DESC LIMIT 10",
+  "SELECT WatchID, ClientIP, count(*) AS c, sum(IsRefresh), avg(ResolutionWidth) FROM hits WHERE SearchPhrase <> '' GROUP BY WatchID, ClientIP ORDER BY c DESC LIMIT 10",
+  "SELECT WatchID, ClientIP, count(*) AS c, sum(IsRefresh), avg(ResolutionWidth) FROM hits GROUP BY WatchID, ClientIP ORDER BY c DESC LIMIT 10",
+  "SELECT URL, count(*) AS c FROM hits GROUP BY URL ORDER BY c DESC LIMIT 10",
+  "SELECT 1, URL, count(*) AS c FROM hits GROUP BY 1, URL ORDER BY c DESC LIMIT 10",
+  "SELECT ClientIP, ClientIP - 1, ClientIP - 2, ClientIP - 3, count(*) AS c FROM hits GROUP BY ClientIP, ClientIP - 1, ClientIP - 2, ClientIP - 3 ORDER BY c DESC LIMIT 10",
+  "SELECT URL, count(*) AS PageViews FROM hits WHERE CounterID = 62 AND EventDate >= '2013-07-01' AND EventDate <= '2013-07-31' AND DontCountHits = 0 AND IsRefresh = 0 AND URL <> '' GROUP BY URL ORDER BY PageViews DESC LIMIT 10",
+  "SELECT Title, count(*) AS PageViews FROM hits WHERE CounterID = 62 AND EventDate >= '2013-07-01' AND EventDate <= '2013-07-31' AND DontCountHits = 0 AND IsRefresh = 0 AND Title <> '' GROUP BY Title ORDER BY PageViews DESC LIMIT 10",
+  "SELECT URL, count(*) AS PageViews FROM hits WHERE CounterID = 62 AND EventDate >= '2013-07-01' AND EventDate <= '2013-07-31' AND IsRefresh = 0 AND IsLink <> 0 AND IsDownload = 0 GROUP BY URL ORDER BY PageViews DESC LIMIT 10 OFFSET 1000",
+  "SELECT TraficSourceID, SearchEngineID, AdvEngineID, CASE WHEN (SearchEngineID = 0 AND AdvEngineID = 0) THEN Referer ELSE '' END AS Src, URL AS Dst, count(*) AS PageViews FROM hits WHERE CounterID = 62 AND EventDate >= '2013-07-01' AND EventDate <= '2013-07-31' AND IsRefresh = 0 GROUP BY TraficSourceID, SearchEngineID, AdvEngineID, Src, Dst ORDER BY PageViews DESC LIMIT 10 OFFSET 1000",
+  "SELECT URLHash, EventDate, count(*) AS PageViews FROM hits WHERE CounterID = 62 AND EventDate >= '2013-07-01' AND EventDate <= '2013-07-31' AND IsRefresh = 0 AND TraficSourceID IN (-1, 6) AND RefererHash = 3594120000172545465 GROUP BY URLHash, EventDate ORDER BY PageViews DESC LIMIT 10 OFFSET 100",
+  "SELECT WindowClientWidth, WindowClientHeight, count(*) AS PageViews FROM hits WHERE CounterID = 62 AND EventDate >= '2013-07-01' AND EventDate <= '2013-07-31' AND IsRefresh = 0 AND DontCountHits = 0 AND URLHash = 2868770270353813622 GROUP BY WindowClientWidth, WindowClientHeight ORDER BY PageViews DESC LIMIT 10 OFFSET 10000",
+  // Q43: differs — toStartOfMinute() vs DATE_TRUNC
+  {
+    ch: "SELECT toStartOfMinute(EventTime) AS M, count(*) AS PageViews FROM hits WHERE CounterID = 62 AND EventDate >= '2013-07-01' AND EventDate <= '2013-07-31' AND IsRefresh = 0 AND DontCountHits = 0 GROUP BY toStartOfMinute(EventTime) ORDER BY toStartOfMinute(EventTime) LIMIT 10 OFFSET 1000",
+    pg: "SELECT DATE_TRUNC('minute', EventTime) AS M, count(*) AS PageViews FROM hits WHERE CounterID = 62 AND EventDate >= '2013-07-01' AND EventDate <= '2013-07-31' AND IsRefresh = 0 AND DontCountHits = 0 GROUP BY DATE_TRUNC('minute', EventTime) ORDER BY DATE_TRUNC('minute', EventTime) LIMIT 10 OFFSET 1000",
+  },
+];
+
+function escHtml(s) {
+  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+function sqlContent(entry) {
+  const block = (sql) =>
+    `<div class="sql-block-wrap"><div class="sql-block">${escHtml(sql)}</div><button class="btn-copy" onclick="copySql(this)">Copy</button></div>`;
+  if (typeof entry === 'string') {
+    return `<div class="sql-db-label all">SQL</div>${block(entry)}`;
+  }
+  return `<div class="sql-db-label ch">ClickHouse</div>${block(entry.ch)}` +
+         `<div class="sql-db-label pg" style="margin-top:8px">PostgreSQL</div>${block(entry.pg)}`;
+}
+
+async function copySql(btn) {
+  const text = btn.previousElementSibling.textContent;
+  try {
+    await navigator.clipboard.writeText(text);
+    btn.textContent = 'Copied!';
+    btn.style.color = 'var(--teal)';
+  } catch (_) {
+    btn.textContent = 'Error';
+  }
+  setTimeout(() => { btn.textContent = 'Copy'; btn.style.color = ''; }, 1500);
+}
+
+const LABELS = [
+  "Total row count","Count AdvEngineID≠0","Sum/count/avg agg","Average UserID",
+  "Distinct UserID","Distinct SearchPhrase","Min/max EventDate","Top AdvEngineID",
+  "Top regions by user","Region rollup","Top mobile models","Top phone+model",
+  "Top search phrases","Top phrases by user","Top engine+phrase","Top users",
+  "User+phrase (sorted)","User+phrase (unsorted)","User+minute+phrase","Lookup UserID",
+  "Count google URLs","Top phrases (google)","Google title filter","Google rows *",
+  "Phrases by time","Phrases α-order","Phrases time+α","Counter avg URL len",
+  "Referer domain regex","90× width sums","Engine+IP (search)","WatchID+IP (search)",
+  "WatchID+IP (all)","Top URLs","Top URLs (with 1)","ClientIP arithmetic",
+  "Counter62 top URLs","Counter62 top titles","Counter62 linked","Counter62 sources",
+  "Counter62 URLHash","Counter62 window","Counter62 per-minute",
+];
+
+// ── State ──────────────────────────────────────────────────────────────────────
+let polling   = null;
+let lastData  = null;
+let chart     = null;
+let reloading = false;
+
+// ── DOM helpers ────────────────────────────────────────────────────────────────
+const $ = id => document.getElementById(id);
+
+function fmtRows(n) {
+  if (!n) return '— rows loaded';
+  if (n >= 1e6) return (n / 1e6).toFixed(1) + 'M rows loaded';
+  if (n >= 1e3) return (n / 1e3).toFixed(0) + 'K rows loaded';
+  return n.toLocaleString() + ' rows loaded';
+}
+
+function fmt(ms) {
+  if (ms === null || ms === undefined) return '—';
+  if (ms >= 10000) return '>10 s';
+  if (ms >= 1000)  return (ms/1000).toFixed(2) + ' s';
+  return ms.toFixed(0) + ' ms';
+}
+
+function timeCls(ms, isTimeout, status) {
+  if (status === 'running') return 't-running';
+  if (isTimeout || status === 'timeout') return 't-timeout';
+  if (ms === null) return 't-pending';
+  if (ms < 1000)   return 't-fast';
+  if (ms < 5000)   return 't-med';
+  return 't-slow';
+}
+
+function speedupFmt(chP50, pgP50, pgStatus, chStatus) {
+  if (chStatus === 'timeout' && pgStatus === 'timeout') return ['—', 'spd-na'];
+  if (pgStatus === 'timeout' && chP50 !== null) return ['>1000×', 'spd-huge'];
+  if (chStatus === 'timeout' && pgP50 !== null) return ['PG wins', 'spd-med'];
+  if (chP50 === null || pgP50 === null) return ['—', 'spd-na'];
+  const r = pgP50 / chP50;
+  if (r < 1) { const inv = (1/r).toFixed(1); return [`PG ${inv}×`, 'spd-med']; }
+  if (r >= 1000) return ['>1000×', 'spd-huge'];
+  const txt = r >= 10 ? r.toFixed(0) + '×' : r.toFixed(1) + '×';
+  const cls = r >= 10 ? 'spd-huge' : r >= 3 ? 'spd-fast' : 'spd-med';
+  return [txt, cls];
+}
+
+function statusIcon(q) {
+  switch (q.status) {
+    case 'ok':      return ['✓', 'ic-ok'];
+    case 'running': return ['●', 'ic-run'];
+    case 'timeout': return ['✕', 'ic-timeout'];
+    case 'error':   return ['!', 'ic-error'];
+    default:        return ['·', 'ic-pending'];
+  }
+}
+
+// ── Build table rows (once) ────────────────────────────────────────────────────
+function buildTable() {
+  const tbody = $('query-tbody');
+  tbody.innerHTML = '';
+  for (let i = 0; i < 43; i++) {
+    // Data row
+    const tr = document.createElement('tr');
+    tr.id = `row-${i}`;
+    tr.className = 'data-row';
+    tr.setAttribute('onclick', `toggleRow(${i})`);
+    tr.innerHTML = `
+      <td class="qnum">${i+1}</td>
+      <td class="qlabel">${LABELS[i]}</td>
+      <td class="status-cell" id="ch-ic-${i}">·</td>
+      <td class="time-cell" id="ch-p50-${i}">—</td>
+      <td class="time-cell" id="ch-p90-${i}">—</td>
+      <td class="time-cell" id="ch-p99-${i}">—</td>
+      <td class="runs-cell" id="ch-run-${i}">0</td>
+      <td style="border-left:1px solid var(--bdr)"></td>
+      <td class="status-cell" id="pg-ic-${i}">·</td>
+      <td class="time-cell" id="pg-p50-${i}">—</td>
+      <td class="time-cell" id="pg-p90-${i}">—</td>
+      <td class="time-cell" id="pg-p99-${i}">—</td>
+      <td class="runs-cell" id="pg-run-${i}">0</td>
+      <td class="speedup-cell spd-na" id="spd-${i}">—</td>
+    `;
+    tbody.appendChild(tr);
+
+    // Expand row
+    const expTr = document.createElement('tr');
+    expTr.id = `expand-${i}`;
+    expTr.className = 'expand-row';
+    expTr.innerHTML = `
+      <td colspan="14" class="expand-inner">
+        ${sqlContent(QUERY_SQL[i])}
+        <div class="expand-charts">
+          <div class="expand-chart-box">
+            <h4>Percentile Comparison (ms)</h4>
+            <canvas id="pct-chart-${i}"></canvas>
+          </div>
+          <div class="expand-chart-box">
+            <h4>p50 History over Runs</h4>
+            <canvas id="hist-chart-${i}"></canvas>
+          </div>
+        </div>
+      </td>
+    `;
+    tbody.appendChild(expTr);
+  }
+}
+
+// ── Update row from data ───────────────────────────────────────────────────────
+function updateRow(i, chQ, pgQ) {
+  const row = $(`row-${i}`);
+
+  // CH
+  const [chIc, chIcCls] = statusIcon(chQ);
+  const chIcEl = $(`ch-ic-${i}`);
+  chIcEl.textContent = chIc;
+  chIcEl.className = `status-cell ${chIcCls}`;
+
+  const chP50El = $(`ch-p50-${i}`);
+  const chCls = timeCls(chQ.p50_ms, chQ.timeout_count > 0, chQ.status);
+  chP50El.textContent = chQ.status === 'timeout' ? 'timeout' : fmt(chQ.p50_ms);
+  chP50El.className = `time-cell ${chCls}`;
+
+  $(`ch-p90-${i}`).textContent = chQ.status === 'timeout' ? '—' : fmt(chQ.p90_ms);
+  $(`ch-p90-${i}`).className = `time-cell ${chCls}`;
+  $(`ch-p99-${i}`).textContent = chQ.status === 'timeout' ? '—' : fmt(chQ.p99_ms);
+  $(`ch-p99-${i}`).className = `time-cell ${chCls}`;
+  $(`ch-run-${i}`).textContent = chQ.runs;
+
+  // PG
+  const [pgIc, pgIcCls] = statusIcon(pgQ);
+  const pgIcEl = $(`pg-ic-${i}`);
+  pgIcEl.textContent = pgIc;
+  pgIcEl.className = `status-cell ${pgIcCls}`;
+
+  const pgP50El = $(`pg-p50-${i}`);
+  const pgCls = timeCls(pgQ.p50_ms, pgQ.timeout_count > 0, pgQ.status);
+  pgP50El.textContent = pgQ.status === 'timeout' ? 'timeout' : fmt(pgQ.p50_ms);
+  pgP50El.className = `time-cell ${pgCls}`;
+
+  $(`pg-p90-${i}`).textContent = pgQ.status === 'timeout' ? '—' : fmt(pgQ.p90_ms);
+  $(`pg-p90-${i}`).className = `time-cell ${pgCls}`;
+  $(`pg-p99-${i}`).textContent = pgQ.status === 'timeout' ? '—' : fmt(pgQ.p99_ms);
+  $(`pg-p99-${i}`).className = `time-cell ${pgCls}`;
+  $(`pg-run-${i}`).textContent = pgQ.runs;
+
+  // Speedup
+  const [spdTxt, spdCls] = speedupFmt(chQ.p50_ms, pgQ.p50_ms, pgQ.status, chQ.status);
+  const spdEl = $(`spd-${i}`);
+  spdEl.textContent = spdTxt;
+  spdEl.className = `speedup-cell ${spdCls}`;
+
+  // Row highlight for currently running query
+  row.classList.remove('active-ch', 'active-pg');
+  if (chQ.status === 'running') row.classList.add('active-ch');
+  if (pgQ.status === 'running') row.classList.add('active-pg');
+}
+
+// ── Chart ──────────────────────────────────────────────────────────────────────
+function initChart() {
+  const ctx = $('speedupChart').getContext('2d');
+  chart = new Chart(ctx, {
+    type: 'bar',
+    data: {
+      labels: Array.from({length:43}, (_,i) => `Q${i+1}`),
+      datasets: [{
+        label: 'Speedup (×)',
+        data: new Array(43).fill(0),
+        backgroundColor: 'rgba(74,191,184,0.65)',
+        borderColor: 'rgba(74,191,184,1)',
+        borderWidth: 1,
+        borderRadius: 3,
+      }]
+    },
+    options: {
+      responsive: true,
+      animation: { duration: 400 },
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          callbacks: {
+            title: items => `Q${items[0].dataIndex+1}: ${LABELS[items[0].dataIndex]}`,
+            label: item => {
+              const v = item.raw;
+              if (v <= 0) return 'No data yet';
+              return `CH is ${v.toFixed(1)}× faster than PostgreSQL`;
+            }
+          },
+          backgroundColor: '#0D1B26',
+          titleColor: '#E8E2D9',
+          bodyColor: '#6A8BA8',
+          borderColor: '#2A3F55',
+          borderWidth: 1,
+        }
+      },
+      scales: {
+        x: {
+          ticks: { color: '#6A8BA8', font: { family: 'JetBrains Mono', size: 10 } },
+          grid:  { color: 'rgba(42,63,85,0.5)' },
+        },
+        y: {
+          beginAtZero: true,
+          ticks: {
+            color: '#6A8BA8',
+            font: { family: 'JetBrains Mono', size: 10 },
+            callback: v => `${v}×`
+          },
+          grid: { color: 'rgba(42,63,85,0.5)' },
+        }
+      }
+    }
+  });
+}
+
+function updateChart(chQueries, pgQueries) {
+  if (!chart) return;
+  const data = chQueries.map((chQ, i) => {
+    const pgQ = pgQueries[i];
+    if (!chQ.p50_ms || !pgQ.p50_ms) return 0;
+    if (pgQ.status === 'timeout') return Math.min(1000, 10000 / (chQ.p50_ms || 1));
+    return Math.max(0, pgQ.p50_ms / chQ.p50_ms);
+  });
+  chart.data.datasets[0].data = data;
+
+  // Colour bars: green for big speedup, yellow for small
+  chart.data.datasets[0].backgroundColor = data.map(v => {
+    if (v <= 0)  return 'rgba(106,139,168,0.4)';
+    if (v >= 10) return 'rgba(74,191,184,0.75)';
+    if (v >= 3)  return 'rgba(74,218,144,0.65)';
+    return 'rgba(232,208,124,0.65)';
+  });
+  chart.update('none');
+}
+
+// ── Expand row state ──────────────────────────────────────────────────────────
+const expandedRows = new Set();
+const expandCharts = {};
+// Per-query run history: array of p50 snapshots captured each time runs increments
+const qHistory = Array.from({length:43}, () => ({ch:[], pg:[]}));
+const prevRuns  = Array.from({length:43}, () => ({ch:0, pg:0}));
+
+function toggleRow(i) {
+  const expRow = $(`expand-${i}`);
+  if (expandedRows.has(i)) {
+    expandedRows.delete(i);
+    expRow.classList.remove('open');
+    if (expandCharts[i]) {
+      expandCharts[i].pct.destroy();
+      expandCharts[i].hist.destroy();
+      delete expandCharts[i];
+    }
+  } else {
+    expandedRows.add(i);
+    expRow.classList.add('open');
+    createExpandCharts(i);
+    if (lastData) {
+      updateExpandCharts(i, lastData.clickhouse.queries[i], lastData.postgres.queries[i]);
+    }
+  }
+}
+
+// Factory — returns a fresh options object each time so Chart.js mutations don't bleed between charts
+function expandChartOpts() {
+  return {
+    responsive: true,
+    animation: false,
+    plugins: {
+      legend: { labels: { color: '#6A8BA8', font: { family: 'JetBrains Mono', size: 10 }, boxWidth: 10 } },
+      tooltip: {
+        backgroundColor: '#0D1B26', titleColor: '#E8E2D9', bodyColor: '#6A8BA8',
+        borderColor: '#2A3F55', borderWidth: 1,
+        callbacks: { label: item => `${item.dataset.label}: ${fmt(item.raw)}` }
+      }
+    },
+    scales: {
+      x: { ticks: { color: '#6A8BA8', font: { family: 'JetBrains Mono', size: 10 } }, grid: { color: 'rgba(42,63,85,0.5)' } },
+      y: { beginAtZero: true, ticks: { color: '#6A8BA8', font: { family: 'JetBrains Mono', size: 10 }, callback: v => fmt(v) }, grid: { color: 'rgba(42,63,85,0.5)' } }
+    }
+  };
+}
+
+function createExpandCharts(i) {
+  const pct = new Chart($(`pct-chart-${i}`).getContext('2d'), {
+    type: 'bar',
+    data: {
+      labels: ['p50', 'p90', 'p99'],
+      datasets: [
+        { label: 'ClickHouse', data: [0,0,0], backgroundColor: 'rgba(74,191,184,0.7)', borderColor: 'rgba(74,191,184,1)', borderWidth: 1, borderRadius: 3 },
+        { label: 'PostgreSQL', data: [0,0,0], backgroundColor: 'rgba(91,155,213,0.7)', borderColor: 'rgba(91,155,213,1)', borderWidth: 1, borderRadius: 3 },
+      ]
+    },
+    options: expandChartOpts(),
+  });
+
+  const hist = new Chart($(`hist-chart-${i}`).getContext('2d'), {
+    type: 'line',
+    data: {
+      labels: [],
+      datasets: [
+        { label: 'ClickHouse p50', data: [], borderColor: 'rgba(74,191,184,1)', backgroundColor: 'rgba(74,191,184,0.1)', pointRadius: 3, tension: 0.3, fill: true },
+        { label: 'PostgreSQL p50', data: [], borderColor: 'rgba(91,155,213,1)', backgroundColor: 'rgba(91,155,213,0.1)', pointRadius: 3, tension: 0.3, fill: true },
+      ]
+    },
+    options: expandChartOpts(),
+  });
+
+  expandCharts[i] = { pct, hist };
+}
+
+function updateExpandCharts(i, chQ, pgQ) {
+  if (!expandCharts[i]) return;
+  const { pct, hist } = expandCharts[i];
+
+  pct.data.datasets[0].data = [chQ.p50_ms || 0, chQ.p90_ms || 0, chQ.p99_ms || 0];
+  pct.data.datasets[1].data = [pgQ.p50_ms || 0, pgQ.p90_ms || 0, pgQ.p99_ms || 0];
+  pct.update('none');
+
+  const h = qHistory[i];
+  const labels = h.ch.map((_, j) => `R${j+1}`);
+  // Align pg history (may be shorter) with same labels
+  hist.data.labels = labels;
+  hist.data.datasets[0].data = h.ch;
+  hist.data.datasets[1].data = h.pg;
+  hist.update('none');
+}
+
+// ── Poll ────────────────────────────────────────────────────────────────────────
+async function poll() {
+  try {
+    const resp = await fetch(`${API}/status`);
+    if (!resp.ok) return;
+    const d = await resp.json();
+    lastData = d;
+    applyData(d);
+  } catch (_) {}
+}
+
+function applyData(d) {
+  // Row mismatch check
+  const chRows = d.loader.clickhouse_rows || 0;
+  const pgRows = d.loader.postgres_rows  || 0;
+  const rowsMismatch = chRows > 0 && pgRows > 0 && chRows !== pgRows;
+
+  // Loader banner
+  const banner = $('loader-banner');
+  if (rowsMismatch) {
+    banner.style.display = 'flex';
+    banner.style.borderLeftColor = 'var(--red)';
+    document.querySelector('#loader-banner .spinner').style.borderTopColor = 'var(--red)';
+    $('loader-msg').style.color = 'var(--red)';
+    $('loader-msg').textContent =
+      `Row count mismatch — ClickHouse: ${chRows.toLocaleString()} rows · PostgreSQL: ${pgRows.toLocaleString()} rows. The loader is fixing this automatically.`;
+    $('btn-start').disabled = true;
+    $('btn-stop').disabled  = !d.running;
+  } else if (d.loader.ready) {
+    banner.style.display = 'none';
+    $('btn-start').disabled = d.running;
+    $('btn-stop').disabled  = !d.running;
+  } else {
+    banner.style.display = 'flex';
+    banner.style.borderLeftColor = '';
+    $('loader-msg').style.color = '';
+    $('loader-msg').textContent = d.loader.message || '…';
+    $('btn-start').disabled = true;
+    $('btn-stop').disabled  = true;
+  }
+
+  // Running indicator + active-DB badge
+  const dot = $('dot');
+  const lbl = $('run-label');
+  const badge = $('active-db-badge');
+  if (d.running) {
+    dot.className = 'dot live';
+    lbl.textContent = 'running';
+    lbl.style.color = 'var(--green)';
+    if (d.current_db === 'clickhouse') {
+      badge.style.display = 'inline-block';
+      badge.textContent = '▶ ClickHouse';
+      badge.style.background = 'rgba(74,191,184,0.15)';
+      badge.style.color = 'var(--teal)';
+      badge.style.border = '1px solid var(--teal)';
+    } else if (d.current_db === 'postgres') {
+      badge.style.display = 'inline-block';
+      badge.textContent = '▶ PostgreSQL';
+      badge.style.background = 'rgba(91,155,213,0.15)';
+      badge.style.color = 'var(--blue)';
+      badge.style.border = '1px solid var(--blue)';
+    } else {
+      badge.style.display = 'none';
+    }
+  } else {
+    dot.className = 'dot';
+    lbl.textContent = 'idle';
+    lbl.style.color = 'var(--mu)';
+    badge.style.display = 'none';
+    if (d.loader.ready && !rowsMismatch) {
+      $('btn-start').disabled = false;
+      $('btn-stop').disabled  = true;
+    }
+  }
+
+  // Dim the idle database's header columns
+  const chHeaders = document.querySelectorAll('th.ch');
+  const pgHeaders = document.querySelectorAll('th.pg');
+  if (d.running && d.current_db === 'clickhouse') {
+    chHeaders.forEach(el => el.style.opacity = '1');
+    pgHeaders.forEach(el => el.style.opacity = '0.35');
+  } else if (d.running && d.current_db === 'postgres') {
+    chHeaders.forEach(el => el.style.opacity = '0.35');
+    pgHeaders.forEach(el => el.style.opacity = '1');
+  } else {
+    chHeaders.forEach(el => el.style.opacity = '1');
+    pgHeaders.forEach(el => el.style.opacity = '1');
+  }
+
+  // Summary
+  $('ch-total').textContent = d.clickhouse.total_runs.toLocaleString();
+  $('pg-total').textContent = d.postgres.total_runs.toLocaleString();
+  $('ch-rows-loaded').textContent = fmtRows(d.loader.clickhouse_rows);
+  $('pg-rows-loaded').textContent = fmtRows(d.loader.postgres_rows);
+
+  // Reload button — enabled only when loader is ready, not running, and no mismatch
+  const canReload = d.loader.ready && !d.running && !rowsMismatch;
+  $('btn-reload').disabled = !canReload;
+  if (reloading && d.loader.ready && !rowsMismatch) {
+    // Reload just completed
+    reloading = false;
+    setReloadMsg(`Done — ${fmtRows(d.loader.clickhouse_rows)}`, 'ok');
+    setTimeout(() => setReloadMsg('', ''), 4000);
+  }
+
+  let chTO = 0, pgTO = 0, speedups = [];
+  d.clickhouse.queries.forEach((chQ, i) => {
+    const pgQ = d.postgres.queries[i];
+    chTO += chQ.timeout_count;
+    pgTO += pgQ.timeout_count;
+    if (chQ.p50_ms && pgQ.p50_ms && pgQ.status !== 'timeout') {
+      speedups.push(pgQ.p50_ms / chQ.p50_ms);
+    } else if (pgQ.status === 'timeout' && chQ.p50_ms) {
+      speedups.push(10000 / chQ.p50_ms);
+    }
+    updateRow(i, chQ, pgQ);
+
+    // Track p50 history whenever run count increments
+    const pr = prevRuns[i];
+    const h  = qHistory[i];
+    if (chQ.runs > pr.ch && chQ.p50_ms !== null) {
+      h.ch.push(chQ.p50_ms);
+      if (h.ch.length > 60) h.ch.shift();
+      pr.ch = chQ.runs;
+    }
+    if (pgQ.runs > pr.pg && pgQ.p50_ms !== null) {
+      h.pg.push(pgQ.p50_ms);
+      if (h.pg.length > 60) h.pg.shift();
+      pr.pg = pgQ.runs;
+    }
+
+    if (expandedRows.has(i)) updateExpandCharts(i, chQ, pgQ);
+  });
+
+  $('ch-timeouts').textContent = chTO;
+  $('pg-timeouts').textContent = pgTO;
+
+  if (speedups.length > 0) {
+    const avg = speedups.reduce((a,b)=>a+b,0) / speedups.length;
+    $('avg-speedup').textContent = avg.toFixed(1) + '×';
+  } else {
+    $('avg-speedup').textContent = '—';
+  }
+
+  updateChart(d.clickhouse.queries, d.postgres.queries);
+}
+
+// ── Reload controls ───────────────────────────────────────────────────────────
+async function reloadData() {
+  const files = parseInt($('files-select').value, 10);
+  $('btn-reload').disabled = true;
+  reloading = true;
+  setReloadMsg(`Loading ${files} file(s)…`, '');
+  try {
+    const r = await fetch(`${API}/loader/reload?files=${files}`, { method: 'POST' });
+    const j = await r.json();
+    if (j.status === 'busy') {
+      setReloadMsg('Reload already in progress.', '');
+      reloading = false;
+    } else if (j.status === 'error') {
+      setReloadMsg(j.message || 'Error starting reload.', 'err');
+      reloading = false;
+      $('btn-reload').disabled = false;
+    }
+  } catch (_) {
+    setReloadMsg('Could not reach loader service.', 'err');
+    reloading = false;
+    $('btn-reload').disabled = false;
+  }
+}
+
+function setReloadMsg(text, cls) {
+  const el = $('reload-msg');
+  el.textContent = text;
+  el.className = 'reload-msg' + (cls ? ' ' + cls : '');
+}
+
+// ── Controls ──────────────────────────────────────────────────────────────────
+async function startBench() {
+  $('btn-start').disabled = true;
+  // Reset history so re-runs accumulate fresh data (backend resets q.runs to 0)
+  for (let i = 0; i < 43; i++) {
+    qHistory[i] = { ch: [], pg: [] };
+    prevRuns[i] = { ch: 0, pg: 0 };
+  }
+  try {
+    const r = await fetch(`${API}/benchmark/start`, { method: 'POST' });
+    const j = await r.json();
+    if (j.status !== 'started') {
+      alert(j.message || 'Could not start benchmark.');
+      $('btn-start').disabled = false;
+    }
+  } catch (_) {
+    $('btn-start').disabled = false;
+  }
+}
+
+async function stopBench() {
+  $('btn-stop').disabled = true;
+  try {
+    await fetch(`${API}/benchmark/stop`, { method: 'POST' });
+  } catch (_) {}
+}
+
+// ── Init ──────────────────────────────────────────────────────────────────────
+buildTable();
+initChart();
+poll();
+polling = setInterval(poll, POLL_MS);
+</script>
+</body>
+</html>

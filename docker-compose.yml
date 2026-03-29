@@ -1,0 +1,110 @@
+services:
+
+  # ── ClickHouse ──────────────────────────────────────────────────────────────
+  clickhouse:
+    image: clickhouse/clickhouse-server:26.3
+    container_name: showdown-clickhouse
+    environment:
+      CLICKHOUSE_USER: default
+      CLICKHOUSE_PASSWORD: bench_pass
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1
+    volumes:
+      - clickhouse_data:/var/lib/clickhouse
+      - ./clickhouse-init:/docker-entrypoint-initdb.d
+    ports:
+      - "8123:8123"
+      - "9000:9000"
+    ulimits:
+      nofile: { soft: 262144, hard: 262144 }
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8123/ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  # ── PostgreSQL ──────────────────────────────────────────────────────────────
+  postgres:
+    image: postgres:17
+    container_name: showdown-postgres
+    environment:
+      POSTGRES_DB: hits
+      POSTGRES_USER: bench_user
+      POSTGRES_PASSWORD: bench_pass
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./postgres-init:/docker-entrypoint-initdb.d
+    ports:
+      - "5432:5432"
+    command: >
+      postgres
+        -c max_connections=50
+        -c shared_buffers=2GB
+        -c effective_cache_size=6GB
+        -c work_mem=256MB
+        -c maintenance_work_mem=1GB
+        -c wal_level=minimal
+        -c max_wal_senders=0
+        -c checkpoint_completion_target=0.9
+        -c random_page_cost=1.1
+        -c effective_io_concurrency=200
+        -c min_wal_size=2GB
+        -c max_wal_size=8GB
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U bench_user -d hits"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  # ── Data loader (one-shot) ──────────────────────────────────────────────────
+  loader:
+    build: ./loader
+    container_name: showdown-loader
+    depends_on:
+      clickhouse: { condition: service_healthy }
+      postgres:   { condition: service_healthy }
+    environment:
+      CLICKHOUSE_HOST: clickhouse
+      CLICKHOUSE_PORT: 8123
+      CLICKHOUSE_USER: default
+      CLICKHOUSE_PASSWORD: bench_pass
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: bench_user
+      POSTGRES_PASSWORD: bench_pass
+      POSTGRES_DB: hits
+      INSERT_WORKERS: ${INSERT_WORKERS:-}
+      PARQUET_FILES: ${PARQUET_FILES:-5}
+    volumes:
+      - ./tmp:/tmp/hits_parquet
+    restart: unless-stopped
+
+  # ── Backend API ─────────────────────────────────────────────────────────────
+  backend:
+    build: ./backend
+    container_name: showdown-backend
+    depends_on:
+      clickhouse: { condition: service_healthy }
+      postgres:   { condition: service_healthy }
+    environment:
+      CLICKHOUSE_HOST: clickhouse
+      CLICKHOUSE_PORT: "8123"
+      CLICKHOUSE_PASSWORD: bench_pass
+      POSTGRES_HOST: postgres
+      POSTGRES_USER: bench_user
+      POSTGRES_PASSWORD: bench_pass
+      POSTGRES_DB: hits
+    ports:
+      - "8000:8000"
+    restart: unless-stopped
+
+  # ── Dashboard ───────────────────────────────────────────────────────────────
+  dashboard:
+    build: ./dashboard
+    container_name: showdown-dashboard
+    ports:
+      - "3001:80"
+    restart: unless-stopped
+
+volumes:
+  clickhouse_data:
+  postgres_data:
