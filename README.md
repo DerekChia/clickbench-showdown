@@ -65,6 +65,22 @@ Press **▶ Start Benchmark** to begin running queries.
 
 ---
 
+## Resetting
+
+To wipe all data and start fresh:
+
+```bash
+./showdown.sh reset        # prompts for confirmation
+./showdown.sh reset -y     # skips confirmation
+
+# Windows
+.\showdown.ps1 reset -y
+```
+
+This removes all Docker volumes (ClickHouse data, PostgreSQL data) and clears the `./tmp/` parquet cache. The next `start` will re-download and reload everything from scratch.
+
+---
+
 ## Data loading
 
 On first start the loader:
@@ -202,19 +218,3 @@ olap-database-showdown/
 ├── showdown.sh          macOS / Linux launcher
 └── showdown.ps1         Windows PowerShell launcher
 ```
-
----
-
-## Resetting
-
-To wipe all data and start fresh:
-
-```bash
-./showdown.sh reset        # prompts for confirmation
-./showdown.sh reset -y     # skips confirmation
-
-# Windows
-.\showdown.ps1 reset -y
-```
-
-This removes all Docker volumes (ClickHouse data, PostgreSQL data) and clears the `./tmp/` parquet cache. The next `start` will re-download and reload everything from scratch.
