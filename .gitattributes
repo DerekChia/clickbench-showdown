@@ -1,0 +1,15 @@
+# Auto-detect text files and normalise to LF in the repo
+* text=auto eol=lf
+
+# Force LF for files that run inside Linux containers
+*.sh    text eol=lf
+*.py    text eol=lf
+*.sql   text eol=lf
+*.yml   text eol=lf
+*.yaml  text eol=lf
+*.html  text eol=lf
+*.css   text eol=lf
+*.js    text eol=lf
+*.json  text eol=lf
+*.txt   text eol=lf
+Dockerfile text eol=lf
