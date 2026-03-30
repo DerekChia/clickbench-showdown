@@ -102,7 +102,7 @@ services:
     build: ./dashboard
     container_name: showdown-dashboard
     ports:
-      - "3001:80"
+      - "3000:80"
     restart: unless-stopped
 
 volumes:
