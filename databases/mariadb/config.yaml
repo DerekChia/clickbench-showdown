@@ -1,0 +1,31 @@
+id: mariadb
+display_name: MariaDB
+color: "#003545"
+
+docker:
+  image: mariadb:11
+  container_name: showdown-mariadb
+  environment:
+    MARIADB_ROOT_PASSWORD: bench_pass
+    MARIADB_DATABASE: hits
+    MARIADB_USER: bench_user
+    MARIADB_PASSWORD: bench_pass
+  ports:
+    "3306": 3307
+  volumes:
+    showdown-mariadb-data: /var/lib/mysql
+  healthcheck:
+    test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+    interval: 5
+    timeout: 5
+    retries: 30
+connection:
+  protocol: aiomysql
+  host: showdown-mariadb
+  port: 3306
+  user: bench_user
+  password: bench_pass
+  database: hits
+
+clickbench_repo_path: mariadb
+row_count_query: "SELECT count(*) FROM hits"

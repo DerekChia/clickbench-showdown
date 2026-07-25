@@ -1,0 +1,30 @@
+id: timescaledb
+display_name: TimescaleDB
+color: "#FDB515"
+
+docker:
+  image: timescale/timescaledb:latest-pg17
+  container_name: showdown-timescaledb
+  environment:
+    POSTGRES_DB: hits
+    POSTGRES_USER: bench_user
+    POSTGRES_PASSWORD: bench_pass
+  ports:
+    "5432": 5433
+  volumes:
+    showdown-timescaledb-data: /var/lib/postgresql/data
+  healthcheck:
+    test: ["CMD-SHELL", "pg_isready -U bench_user -d hits"]
+    interval: 5
+    timeout: 5
+    retries: 20
+connection:
+  protocol: asyncpg
+  host: showdown-timescaledb
+  port: 5432
+  user: bench_user
+  password: bench_pass
+  database: hits
+
+clickbench_repo_path: timescaledb
+row_count_query: "SELECT count(*) FROM hits"

@@ -23,7 +23,7 @@ banner() {
   echo -e "${TEAL}  ╚██████╔╝███████╗██║  ██║██║         ███████║██║  ██║╚██████╔╝╚███╔███╔╝██████╔╝╚██████╔╝╚███╔███╔╝██║ ╚████║${RESET}"
   echo -e "${BLUE}   ╚═════╝ ╚══════╝╚═╝  ╚═╝╚═╝         ╚══════╝╚═╝  ╚═╝ ╚═════╝  ╚══╝╚══╝ ╚═════╝  ╚═════╝  ╚══╝╚══╝ ╚═╝  ╚═══╝${RESET}"
   echo ""
-  echo -e "  ${MU}ClickBench · 43 queries · ClickHouse 26.3 vs PostgreSQL 17 · IS459${RESET}"
+  echo -e "  ${MU}ClickBench · 43 queries · Multi-Database Showdown${RESET}"
   echo ""
 }
 
@@ -72,7 +72,7 @@ cmd_start() {
       exit 1
     fi
     export PARQUET_FILES="$files"
-    log "Parquet files set to ${files} (~$((files * 1000000)) rows)."
+    log "Parquet files set to ${files} (~$((files * 1000000)) rows) — pre-downloaded and preselected in the dashboard."
   fi
 
   banner
@@ -85,18 +85,12 @@ cmd_start() {
   echo ""
   log "All services started."
   echo ""
-  echo -e "  ${TEAL}${BOLD}Dashboard${RESET}   →  ${BOLD}http://localhost:3001${RESET}"
+  echo -e "  ${TEAL}${BOLD}Dashboard${RESET}   →  ${BOLD}http://localhost:3000${RESET}"
   echo -e "  ${MU}Backend API${RESET}  →  http://localhost:8000"
-  echo -e "  ${MU}ClickHouse${RESET}   →  http://localhost:8123"
-  echo -e "  ${MU}PostgreSQL${RESET}   →  localhost:5432"
   echo ""
-  echo -e "  ${BOLD}Run a query:${RESET}"
-  echo -e "  ${TEAL}ClickHouse${RESET}   docker exec -it showdown-clickhouse clickhouse-client --password bench_pass --query \"SELECT count() FROM hits\""
-  echo -e "  ${BLUE}PostgreSQL${RESET}   docker exec -it showdown-postgres psql -U bench_user -d hits -c \"SELECT count(*) FROM hits\""
-  echo ""
-  local _files="${PARQUET_FILES:-5}"
-  warn "The loader is fetching ${_files} parquet file(s) (~$((_files * 1000000)) rows)."
-  warn "ClickHouse loads in ~1 min · PostgreSQL loads in ~$((${_files} * 2))–$((${_files} * 4)) min."
+  info "Select databases to compare from the dashboard."
+  local _files="${PARQUET_FILES:-1}"
+  warn "The loader will fetch ${_files} parquet file(s) (~$((_files * 1000000)) rows)."
   info "Tailing loader logs — press Ctrl+C to detach (services keep running)."
   echo ""
   $COMPOSE logs -f loader
@@ -116,7 +110,7 @@ cmd_stop() {
 
 cmd_restart() {
   cmd_stop
-  cmd_start
+  cmd_start "$@"
 }
 
 cmd_status() {
@@ -129,15 +123,7 @@ cmd_status() {
   hr
   echo ""
 
-  # Loader progress
-  local ch_rows pg_rows
-  ch_rows=$(docker exec showdown-clickhouse \
-    clickhouse-client --password bench_pass -q "SELECT count() FROM hits" 2>/dev/null || echo "0")
-  pg_rows=$(docker exec showdown-postgres \
-    psql -U bench_user -d hits -t -c "SELECT count(*) FROM hits" 2>/dev/null | tr -d ' \n' || echo "0")
-
-  echo -e "  ${TEAL}ClickHouse rows${RESET}   ${BOLD}${ch_rows:-0}${RESET}"
-  echo -e "  ${BLUE}PostgreSQL rows${RESET}   ${BOLD}${pg_rows:-0}${RESET}"
+  info "Check the dashboard at http://localhost:3000 for live status."
   echo ""
 }
 
@@ -155,7 +141,7 @@ cmd_logs() {
 cmd_reset() {
   banner
   check_docker
-  warn "This will stop all containers AND delete all data volumes (database data + parquet cache)."
+  warn "This will stop all containers AND delete all database volumes. Cached files in tmp/ are preserved."
   if [[ "${2:-}" == "-y" || "${2:-}" == "--yes" ]]; then
     confirm="y"
   else
@@ -167,10 +153,24 @@ cmd_reset() {
     exit 0
   fi
   cd "$DIR"
+
+  # Stop and remove dynamically-managed DB containers
+  log "Stopping database containers…"
+  for name in $(docker ps -a --format '{{.Names}}' | grep '^showdown-' || true); do
+    docker stop "$name" &>/dev/null || true
+    docker rm "$name" &>/dev/null || true
+  done
+
   $COMPOSE down -v
-  rm -rf "$DIR/tmp"
-  mkdir -p "$DIR/tmp"
-  log "All containers, volumes, and cached parquet files removed."
+
+  # Remove named volumes created by the DB plugin system. Every one of them is
+  # prefixed `showdown-`, so this can never delete another project's data.
+  log "Removing database volumes…"
+  for vol in $(docker volume ls --format '{{.Name}}' | grep '^showdown-' || true); do
+    docker volume rm "$vol" &>/dev/null && info "Removed volume: $vol" || warn "Could not remove volume: $vol"
+  done
+
+  log "All containers and database volumes removed. Parquet files in tmp/ are preserved."
   echo ""
 }
 
@@ -178,22 +178,25 @@ cmd_help() {
   banner
   echo -e "  ${BOLD}Usage:${RESET}  ./showdown.sh <command> [options]"
   echo ""
-  echo -e "  ${TEAL}start [--workers N] [--files N]${RESET}  Build images, start all services, begin data loading"
+  echo -e "  ${TEAL}start [--workers N] [--files N]${RESET}  Build images, start all services, pre-download data"
   echo -e "  ${TEAL}stop${RESET}            Stop all services (data is preserved)"
-  echo -e "  ${TEAL}restart${RESET}         Stop then start"
-  echo -e "  ${TEAL}status${RESET}          Show container status and row counts"
-  echo -e "  ${TEAL}logs [service]${RESET}  Tail logs (all services, or one: loader/backend/clickhouse/postgres/dashboard)"
+  echo -e "  ${TEAL}restart [options]${RESET}  Stop then start (same options as start)"
+  echo -e "  ${TEAL}status${RESET}          Show container status"
+  echo -e "  ${TEAL}logs [service]${RESET}  Tail logs (all services, or one: loader/backend/dashboard)"
   echo -e "  ${TEAL}reset [-y]${RESET}      Stop and delete ALL data volumes (use -y to skip confirmation)"
   echo -e "  ${TEAL}help${RESET}            Show this message"
   echo ""
   echo -e "  ${MU}Examples:${RESET}"
   echo -e "    ./showdown.sh start"
   echo -e "    ./showdown.sh start --workers 4           ${MU}# override insert parallelism${RESET}"
-  echo -e "    ./showdown.sh start --files 10            ${MU}# load all 10 parquet files (~10 M rows)${RESET}"
+  echo -e "    ./showdown.sh start --files 10            ${MU}# pre-download 10 parquet files (~10 M rows)${RESET}"
   echo -e "    ./showdown.sh start --files 10 --workers 4  ${MU}# combine both${RESET}"
   echo -e "    ./showdown.sh logs loader     ${MU}# watch dataset loading progress${RESET}"
-  echo -e "    ./showdown.sh status          ${MU}# check how many rows are loaded${RESET}"
+  echo -e "    ./showdown.sh status          ${MU}# check which containers are up${RESET}"
   echo -e "    ./showdown.sh stop"
+  echo ""
+  echo -e "  ${MU}--files pre-downloads that many files and preselects them in the${RESET}"
+  echo -e "  ${MU}dashboard; the dropdown there decides how much is actually loaded.${RESET}"
   echo ""
 }
 
@@ -201,7 +204,7 @@ cmd_help() {
 case "${1:-help}" in
   start)   cmd_start "${@:2}" ;;
   stop)    cmd_stop    ;;
-  restart) cmd_restart ;;
+  restart) cmd_restart "${@:2}" ;;
   status)  cmd_status  ;;
   logs)    cmd_logs "$@" ;;
   reset)   cmd_reset "$@" ;;

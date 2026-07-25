@@ -10,10 +10,14 @@ RUN pip install --no-cache-dir \
     pyarrow==15.0.2 \
     pandas==2.2.2 \
     psycopg2-binary==2.9.9 \
-    requests==2.31.0
+    pymysql==1.1.1 \
+    pymonetdb==1.8.1 \
+    duckdb==1.1.0 \
+    docker==7.1.0 \
+    requests==2.31.0 \
+    pyyaml==6.0.1
 
 COPY load.sh /load.sh
-COPY load_pg.py /load_pg.py
 COPY loader_api.py /loader_api.py
 RUN chmod +x /load.sh
 

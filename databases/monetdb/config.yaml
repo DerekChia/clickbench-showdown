@@ -1,0 +1,29 @@
+id: monetdb
+display_name: MonetDB
+color: "#D4483B"
+
+docker:
+  image: monetdb/monetdb:latest
+  container_name: showdown-monetdb
+  environment:
+    MDB_DB_ADMIN_PASS: bench_pass
+  ports:
+    "50000": 50000
+  volumes:
+    showdown-monetdb-data: /var/monetdb5/dbfarm
+  healthcheck:
+    test: ["CMD-SHELL", "monetdb status monetdb 2>&1 | grep -qE '^monetdb'"]
+    interval: 5
+    timeout: 5
+    retries: 30
+
+connection:
+  protocol: monetdb
+  host: showdown-monetdb
+  port: 50000
+  user: monetdb
+  password: bench_pass
+  database: monetdb
+
+clickbench_repo_path: monetdb
+row_count_query: "SELECT count(*) FROM hits"

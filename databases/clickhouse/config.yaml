@@ -1,0 +1,34 @@
+id: clickhouse
+display_name: ClickHouse
+color: "#00b4a0"
+
+docker:
+  image: clickhouse/clickhouse-server:26.3
+  container_name: showdown-clickhouse
+  environment:
+    CLICKHOUSE_USER: default
+    CLICKHOUSE_PASSWORD: bench_pass
+    CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
+  ports:
+    "8123": 8123
+    "9000": 9000
+  volumes:
+    showdown-clickhouse-data: /var/lib/clickhouse
+  healthcheck:
+    test: ["CMD", "wget", "--spider", "-q", "http://localhost:8123/ping"]
+    interval: 5
+    timeout: 5
+    retries: 20
+  ulimits:
+    nofile: 262144
+
+connection:
+  protocol: http
+  host: showdown-clickhouse
+  port: 8123
+  user: default
+  password: bench_pass
+  database: default
+
+clickbench_repo_path: clickhouse
+row_count_query: "SELECT count() FROM hits"

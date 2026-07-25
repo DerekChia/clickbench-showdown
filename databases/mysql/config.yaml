@@ -1,0 +1,36 @@
+id: mysql
+display_name: MySQL
+color: "#4479A1"
+
+docker:
+  image: mysql:8.0
+  container_name: showdown-mysql
+  environment:
+    MYSQL_ROOT_PASSWORD: bench_pass
+    MYSQL_DATABASE: hits
+    MYSQL_USER: bench_user
+    MYSQL_PASSWORD: bench_pass
+  ports:
+    "3306": 3306
+  volumes:
+    showdown-mysql-data: /var/lib/mysql
+  healthcheck:
+    test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-ubench_user", "-pbench_pass"]
+    interval: 5
+    timeout: 5
+    retries: 30
+  # MySQL 8.0 ships with the server-side local_infile switch OFF, which makes
+  # the loader's LOAD DATA LOCAL INFILE fail with ERROR 3948. MariaDB defaults
+  # it to ON, which is why only MySQL needs this.
+  command: --local-infile=1
+
+connection:
+  protocol: aiomysql
+  host: showdown-mysql
+  port: 3306
+  user: bench_user
+  password: bench_pass
+  database: hits
+
+clickbench_repo_path: mysql
+row_count_query: "SELECT count(*) FROM hits"
