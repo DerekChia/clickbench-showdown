@@ -1,0 +1,30 @@
+id: duckdb
+display_name: DuckDB
+color: "#FFC107"
+
+docker:
+  build: databases/duckdb/docker
+  container_name: showdown-duckdb
+  environment:
+    DUCKDB_PATH: /data/showdown.duckdb
+    PORT: "9999"
+  ports:
+    "9999": 9999
+  volumes:
+    showdown-duckdb-data: /data
+  healthcheck:
+    test: ["CMD-SHELL", "python3 -c \"import urllib.request; urllib.request.urlopen('http://localhost:9999/ping')\""]
+    interval: 5
+    timeout: 5
+    retries: 10
+
+connection:
+  protocol: http
+  host: showdown-duckdb
+  port: 9999
+  user: ""
+  password: ""
+  database: ""
+
+clickbench_repo_path: duckdb
+row_count_query: "SELECT count(*) FROM hits"

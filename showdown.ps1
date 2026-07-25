@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-  OLAP Showdown – Windows launcher (PowerShell + WSL/Docker Desktop)
+  ClickBench Showdown – Windows launcher (PowerShell + WSL/Docker Desktop)
 
 .DESCRIPTION
   Requires Docker Desktop for Windows with the WSL 2 backend enabled,
@@ -47,7 +47,7 @@ function banner {
     Write-Teal  "  ╚██████╔╝███████╗██║  ██║██║         ███████║██║  ██║╚██████╔╝╚███╔███╔╝██████╔╝╚██████╔╝╚███╔███╔╝██║ ╚████║"
     Write-Blue  "   ╚═════╝ ╚══════╝╚═╝  ╚═╝╚═╝         ╚══════╝╚═╝  ╚═╝ ╚═════╝  ╚══╝╚══╝ ╚═════╝  ╚═════╝  ╚══╝╚══╝ ╚═╝  ╚═══╝"
     Write-Host ""
-    Write-Mu    "ClickBench · 43 queries · ClickHouse 26.3 vs PostgreSQL 17 · IS459"
+    Write-Mu    "ClickBench · 43 queries · Multi-Database Showdown"
     Write-Host ""
 }
 
@@ -82,7 +82,7 @@ function Cmd-Start {
             exit 1
         }
         $env:PARQUET_FILES = "$FileCount"
-        log "Parquet files set to $FileCount (~$($FileCount * 1000000) rows)."
+        log "Parquet files set to $FileCount (~$($FileCount * 1000000) rows) — pre-downloaded and preselected in the dashboard."
     } else {
         $env:PARQUET_FILES = ""
     }
@@ -98,20 +98,12 @@ function Cmd-Start {
     Write-Host ""
     log "All services started."
     Write-Host ""
-    Write-Host "  " -NoNewline; Write-Host "Dashboard" -ForegroundColor Cyan -NoNewline; Write-Host "   ->  " -NoNewline; Write-Host "http://localhost:3001" -ForegroundColor White
+    Write-Host "  " -NoNewline; Write-Host "Dashboard" -ForegroundColor Cyan -NoNewline; Write-Host "   ->  " -NoNewline; Write-Host "http://localhost:3000" -ForegroundColor White
     Write-Mu    "Backend API  ->  http://localhost:8000"
-    Write-Mu    "ClickHouse   ->  http://localhost:8123"
-    Write-Mu    "PostgreSQL   ->  localhost:5432"
     Write-Host ""
-    Write-Host "  Run a query:" -ForegroundColor White
-    Write-Host "  " -NoNewline; Write-Host "ClickHouse" -ForegroundColor Cyan -NoNewline
-    Write-Host "   docker exec -it showdown-clickhouse clickhouse-client --password bench_pass --query ""SELECT count() FROM hits"""
-    Write-Host "  " -NoNewline; Write-Host "PostgreSQL" -ForegroundColor Blue -NoNewline
-    Write-Host "   docker exec -it showdown-postgres psql -U bench_user -d hits -c ""SELECT count(*) FROM hits"""
-    Write-Host ""
-    $f = if ($env:PARQUET_FILES) { [int]$env:PARQUET_FILES } else { 5 }
-    warn "The loader is fetching $f parquet file(s) (~$($f * 1000000) rows)."
-    warn "ClickHouse loads in ~1 min  |  PostgreSQL loads in ~$($f * 2)-$($f * 4) min."
+    info "Select two databases to compare from the dashboard."
+    $f = if ($env:PARQUET_FILES) { [int]$env:PARQUET_FILES } else { 1 }
+    warn "The loader will fetch $f parquet file(s) (~$($f * 1000000) rows)."
     info "Tailing loader logs — press Ctrl+C to detach (services keep running)."
     Write-Host ""
     docker compose logs -f loader
@@ -130,8 +122,9 @@ function Cmd-Stop {
 }
 
 function Cmd-Restart {
+    param([int]$WorkerCount = 0, [int]$FileCount = 0)
     Cmd-Stop
-    Cmd-Start
+    Cmd-Start -WorkerCount $WorkerCount -FileCount $FileCount
 }
 
 function Cmd-Status {
@@ -144,23 +137,17 @@ function Cmd-Status {
     hr
     Write-Host ""
 
-    $chRows = docker exec showdown-clickhouse `
-        clickhouse-client --password bench_pass -q "SELECT count() FROM hits" 2>$null
-    if ($LASTEXITCODE -ne 0) { $chRows = "0" }
+    # Database containers are created on demand by the backend, so list whatever
+    # is currently up rather than assuming a fixed pair.
+    $dbContainers = docker ps --filter "name=showdown-" --format "{{.Names}}`t{{.Status}}"
+    if ($dbContainers) {
+        Write-Host "  Database containers" -ForegroundColor White
+        hr
+        $dbContainers | ForEach-Object { Write-Mu $_ }
+        Write-Host ""
+    }
 
-    $pgRows = docker exec showdown-postgres `
-        psql -U bench_user -d hits -t -c "SELECT count(*) FROM hits" 2>$null
-    if ($LASTEXITCODE -ne 0) { $pgRows = "0" }
-    $pgRows = ($pgRows -replace '\s','')
-
-    Write-Host "  " -NoNewline
-    Write-Host "ClickHouse rows" -ForegroundColor Cyan -NoNewline
-    Write-Host "   $($chRows.Trim())"
-
-    Write-Host "  " -NoNewline
-    Write-Host "PostgreSQL rows" -ForegroundColor Blue -NoNewline
-    Write-Host "   $($pgRows.Trim())"
-
+    info "Check the dashboard at http://localhost:3000 for live row counts."
     Write-Host ""
 }
 
@@ -179,7 +166,7 @@ function Cmd-Reset {
     param([bool]$Force = $false)
     banner
     Check-Docker
-    warn "This will stop all containers AND delete all data volumes (database data + parquet cache)."
+    warn "This will stop all containers AND delete all database volumes. Cached files in tmp/ are preserved."
     if (-not $Force) {
         $confirm = Read-Host "  Are you sure? [y/N]"
     } else {
@@ -190,11 +177,27 @@ function Cmd-Reset {
         exit 0
     }
     Set-Location $DIR
+
+    # Stop and remove dynamically-managed DB containers
+    log "Stopping database containers..."
+    $names = docker ps -a --filter "name=showdown-" --format "{{.Names}}"
+    foreach ($name in $names) {
+        docker stop $name 2>&1 | Out-Null
+        docker rm $name 2>&1 | Out-Null
+    }
+
     docker compose down -v
-    $tmpDir = Join-Path $DIR "tmp"
-    if (Test-Path $tmpDir) { Remove-Item -Recurse -Force $tmpDir }
-    New-Item -ItemType Directory -Path $tmpDir | Out-Null
-    log "All containers, volumes, and cached parquet files removed."
+
+    # Remove named volumes created by the DB plugin system. Every one of them is
+    # prefixed `showdown-`, so this can never delete another project's data.
+    log "Removing database volumes..."
+    $vols = docker volume ls --format "{{.Name}}" | Where-Object { $_ -like "showdown-*" }
+    foreach ($vol in $vols) {
+        docker volume rm $vol 2>&1 | Out-Null
+        if ($LASTEXITCODE -eq 0) { info "Removed volume: $vol" } else { warn "Could not remove volume: $vol" }
+    }
+
+    log "All containers and database volumes removed. Parquet files in tmp\ are preserved."
     Write-Host ""
 }
 
@@ -202,23 +205,26 @@ function Cmd-Help {
     banner
     Write-Host "  Usage:  .\showdown.ps1 <command> [options]" -ForegroundColor White
     Write-Host ""
-    Write-Host "  " -NoNewline; Write-Host "start [-Workers N] [-Files N]" -ForegroundColor Cyan -NoNewline; Write-Host " Build images, start all services, begin data loading"
+    Write-Host "  " -NoNewline; Write-Host "start [-Workers N] [-Files N]" -ForegroundColor Cyan -NoNewline; Write-Host " Build images, start all services, pre-download data"
     Write-Host "  " -NoNewline; Write-Host "stop           " -ForegroundColor Cyan -NoNewline; Write-Host " Stop all services (data is preserved)"
-    Write-Host "  " -NoNewline; Write-Host "restart        " -ForegroundColor Cyan -NoNewline; Write-Host " Stop then start"
-    Write-Host "  " -NoNewline; Write-Host "status         " -ForegroundColor Cyan -NoNewline; Write-Host " Show container status and row counts"
-    Write-Host "  " -NoNewline; Write-Host "logs [service] " -ForegroundColor Cyan -NoNewline; Write-Host " Tail logs (all, or one: loader/backend/clickhouse/postgres/dashboard)"
-    Write-Host "  " -NoNewline; Write-Host "reset [-y]     " -ForegroundColor Cyan -NoNewline; Write-Host " Stop and delete ALL data volumes (-y to skip confirmation)"
+    Write-Host "  " -NoNewline; Write-Host "restart        " -ForegroundColor Cyan -NoNewline; Write-Host " Stop then start (same options as start)"
+    Write-Host "  " -NoNewline; Write-Host "status         " -ForegroundColor Cyan -NoNewline; Write-Host " Show container status"
+    Write-Host "  " -NoNewline; Write-Host "logs [service] " -ForegroundColor Cyan -NoNewline; Write-Host " Tail logs (all, or one: loader/backend/dashboard)"
+    Write-Host "  " -NoNewline; Write-Host "reset [-y]     " -ForegroundColor Cyan -NoNewline; Write-Host " Stop and delete ALL database volumes (-y to skip confirmation)"
     Write-Host "  " -NoNewline; Write-Host "help           " -ForegroundColor Cyan -NoNewline; Write-Host " Show this message"
     Write-Host ""
     Write-Mu    "Examples:"
     Write-Mu    "  .\showdown.ps1 start"
-    Write-Mu    "  .\showdown.ps1 start -Workers 4              # override insert parallelism"
-    Write-Mu    "  .\showdown.ps1 start -Files 10              # load all 10 parquet files (~10 M rows)"
+    Write-Mu    "  .\showdown.ps1 start -Workers 4             # override insert parallelism"
+    Write-Mu    "  .\showdown.ps1 start -Files 10              # pre-download 10 parquet files (~10 M rows)"
     Write-Mu    "  .\showdown.ps1 start -Files 10 -Workers 4   # combine both"
     Write-Mu    "  .\showdown.ps1 logs loader       # watch dataset loading progress"
-    Write-Mu    "  .\showdown.ps1 status            # check how many rows are loaded"
-    Write-Mu    "  .\showdown.ps1 reset -y          # wipe data without confirmation"
+    Write-Mu    "  .\showdown.ps1 status            # check which containers are up"
+    Write-Mu    "  .\showdown.ps1 reset -y          # wipe database volumes without confirmation"
     Write-Mu    "  .\showdown.ps1 stop"
+    Write-Host ""
+    Write-Mu    "-Files pre-downloads that many files and preselects them in the"
+    Write-Mu    "dashboard; the dropdown there decides how much is actually loaded."
     Write-Host ""
     Write-Host "  Prerequisites:" -ForegroundColor White
     Write-Mu    "  - Docker Desktop for Windows with WSL 2 backend enabled"
@@ -234,7 +240,7 @@ $forceReset = $y -or $yes
 switch ($Command.ToLower()) {
     "start"   { Cmd-Start -WorkerCount $Workers -FileCount $Files }
     "stop"    { Cmd-Stop }
-    "restart" { Cmd-Restart }
+    "restart" { Cmd-Restart -WorkerCount $Workers -FileCount $Files }
     "status"  { Cmd-Status }
     "logs"    { Cmd-Logs -Svc $Arg1 }
     "reset"   { Cmd-Reset -Force $forceReset }

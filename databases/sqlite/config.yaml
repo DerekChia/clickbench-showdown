@@ -1,0 +1,30 @@
+id: sqlite
+display_name: SQLite
+color: "#003B57"
+
+docker:
+  build: databases/sqlite/docker
+  container_name: showdown-sqlite
+  environment:
+    SQLITE_PATH: /data/showdown.sqlite
+    PORT: "9998"
+  ports:
+    "9998": 9998
+  volumes:
+    showdown-sqlite-data: /data
+  healthcheck:
+    test: ["CMD-SHELL", "python3 -c \"import urllib.request; urllib.request.urlopen('http://localhost:9998/ping')\""]
+    interval: 5
+    timeout: 5
+    retries: 10
+
+connection:
+  protocol: http
+  host: showdown-sqlite
+  port: 9998
+  user: ""
+  password: ""
+  database: ""
+
+clickbench_repo_path: sqlite
+row_count_query: "SELECT count(*) FROM hits"
