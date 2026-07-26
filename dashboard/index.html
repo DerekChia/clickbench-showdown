@@ -850,28 +850,45 @@ function renderDbStatusBar() {
   }).join('');
 }
 
+let optionsSignature = null;
+
 function populateSelects() {
   const selA = $('db-a-select');
   const selB = $('db-b-select');
+
+  // fetchDatabases() runs every ~10s. Rebuilding the <option> lists each time
+  // reset both dropdowns and threw away a choice the user had made but not yet
+  // applied, so only rebuild when the available databases actually change.
+  const signature = databases.map(db => `${db.id}:${db.display_name}`).join('|');
+  if (signature === optionsSignature) return;
+  optionsSignature = signature;
+
+  const prevA = selA.value;
+  const prevB = selB.value;
+
   selA.innerHTML = '';
   selB.innerHTML = '';
   databases.forEach(db => {
     selA.innerHTML += `<option value="${db.id}">${db.display_name}</option>`;
     selB.innerHTML += `<option value="${db.id}">${db.display_name}</option>`;
   });
-  // Default: first two different DBs
-  if (databases.length >= 2) {
-    selA.value = databases[0].id;
-    selB.value = databases[1].id;
-  }
-  // Restore from localStorage if available
-  const saved = localStorage.getItem('showdown_selection');
-  if (saved) {
-    try {
-      const s = JSON.parse(saved);
-      if (databases.find(d => d.id === s.a)) selA.value = s.a;
-      if (databases.find(d => d.id === s.b)) selB.value = s.b;
-    } catch(_) {}
+
+  // Keep whatever was selected before the rebuild.
+  if (prevA && databases.find(d => d.id === prevA)) selA.value = prevA;
+  else if (databases.length >= 1) selA.value = databases[0].id;
+  if (prevB && databases.find(d => d.id === prevB)) selB.value = prevB;
+  else if (databases.length >= 2) selB.value = databases[1].id;
+
+  // First build only: restore from localStorage.
+  if (!prevA && !prevB) {
+    const saved = localStorage.getItem('showdown_selection');
+    if (saved) {
+      try {
+        const s = JSON.parse(saved);
+        if (databases.find(d => d.id === s.a)) selA.value = s.a;
+        if (databases.find(d => d.id === s.b)) selB.value = s.b;
+      } catch(_) {}
+    }
   }
 }
 
@@ -1144,8 +1161,15 @@ function updateChart(aQueries, bQueries) {
   const data = aQueries.map((aQ, i) => {
     const bQ = bQueries[i];
     if (!bQ) return 0;
-    if (!aQ.p50_ms || !bQ.p50_ms) return 0;
-    if (bQ.status === 'timeout') return Math.min(1000, 10000 / (aQ.p50_ms || 1));
+    // Timeout first: a timed-out query has p50_ms === null, so the old
+    // null-check ran ahead of this and made the branch unreachable — the chart
+    // showed "no data" for queries the Avg Speedup card was still counting.
+    if (bQ.status === 'timeout' && aQ.p50_ms != null && aQ.p50_ms > 0) {
+      return Math.min(1000, 10000 / aQ.p50_ms);
+    }
+    // `!= null` rather than falsy, so a legitimate sub-millisecond p50 that
+    // rounds to 0.0 isn't discarded.
+    if (aQ.p50_ms == null || bQ.p50_ms == null || aQ.p50_ms <= 0) return 0;
     return Math.max(0, bQ.p50_ms / aQ.p50_ms);
   });
   chart.data.datasets[0].data = data;
@@ -1327,7 +1351,13 @@ function applyData(d) {
 
   // Loader banner
   const banner = $('loader-banner');
-  const rowsMatch = d.loader.db_a_rows > 0 && d.loader.db_a_rows === d.loader.db_b_rows;
+  // Same 1% tolerance the backend applies in /benchmark/start. A strict ===
+  // here disagreed with the backend: a legitimate sub-percent difference (a
+  // MonetDB CSV round-trip landing 13 rows short, say) left Start greyed out
+  // forever on a pair the backend would happily have benchmarked.
+  const ra = d.loader.db_a_rows, rb = d.loader.db_b_rows;
+  const rowsMatch = ra > 0 && rb > 0 &&
+    Math.abs(ra - rb) / Math.max(ra, rb) * 100 <= 1;
   if (d.loader.ready) {
     banner.style.display = rowsMatch ? 'none' : 'flex';
     if (!rowsMatch && d.loader.db_a_rows > 0 && d.loader.db_b_rows > 0) {

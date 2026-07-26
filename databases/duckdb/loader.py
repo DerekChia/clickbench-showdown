@@ -40,14 +40,20 @@ def load(parquet_dir: str, num_files: int, config: dict) -> int:
         print(f"  [duckdb] Copying hits_{i}.parquet to container...", flush=True)
         t0 = time.time()
 
-        # Copy file into container at /data/
+        # Copy file into container at /data/. The tar is staged on disk beside
+        # the parquet rather than built in a BytesIO — buffering a 100-200 MB
+        # archive in RAM per file (ten of them with --files 10) is enough to
+        # OOM the loader under Docker Desktop's default memory limit.
         import tarfile
-        import io
-        tar_stream = io.BytesIO()
-        with tarfile.open(fileobj=tar_stream, mode='w') as tar:
-            tar.add(path, arcname=f"hits_{i}.parquet")
-        tar_stream.seek(0)
-        container.put_archive("/data", tar_stream)
+        import tempfile
+        with tempfile.NamedTemporaryFile(
+            suffix=".tar", dir=os.path.dirname(path)
+        ) as tmp:
+            with tarfile.open(fileobj=tmp, mode="w") as tar:
+                tar.add(path, arcname=f"hits_{i}.parquet")
+            tmp.flush()
+            tmp.seek(0)
+            container.put_archive("/data", tmp)
 
         print(f"  [duckdb] Inserting hits_{i}.parquet...", flush=True)
         _post_sql(config, f"""

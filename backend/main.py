@@ -26,7 +26,7 @@ from query_fetcher import fetch_queries, QUERY_LABELS, QUERY_LABELS_SHORT
 
 LOADER_URL = "http://showdown-loader:5000"
 RESULTS_DIR = os.environ.get("RESULTS_DIR", "/tmp/clickbench_results")
-WATCH_INTERVAL_SEC = 5
+WATCH_INTERVAL_SEC = 10
 LOAD_MAX_WAIT_SEC = 3 * 3600  # a 10-file load into SQLite can take a while
 
 
@@ -83,6 +83,12 @@ _warmup_requested: bool = False
 # True only once both databases have been fully loaded for the current
 # selection. Row counts alone are not evidence of that — see _refresh_loader().
 _load_complete: bool = False
+
+# Last known row count per db_id. While a benchmark runs these are served from
+# here instead of re-queried: a `SELECT count(*)` from the status poller is a
+# full scan that competes with the query being timed, which would corrupt the
+# very measurements this tool exists to produce.
+_row_count_cache: dict[str, int] = {}
 
 
 # ─��� Helpers ──────────────────────────────────────────────────────────────────
@@ -249,13 +255,24 @@ async def _loader_status() -> dict:
     return {}
 
 
-async def _row_count(db_id: str, cfg: dict) -> int:
+async def _row_count(db_id: str, cfg: dict, probe: bool = True) -> int:
+    """Row count for a database, cached.
+
+    With probe=False no query is issued and the last known value is returned —
+    used while a benchmark is running so status polling can't contend with the
+    queries being measured.
+    """
+    if not probe:
+        return _row_count_cache.get(db_id, 0)
     try:
         if not await is_running(db_id, cfg):
+            _row_count_cache.pop(db_id, None)
             return 0
-        return await get_runner(db_id, _registry).get_row_count()
+        n = await get_runner(db_id, _registry).get_row_count()
+        _row_count_cache[db_id] = n
+        return n
     except Exception:
-        return 0
+        return _row_count_cache.get(db_id, 0)
 
 
 async def _refresh_loader() -> None:
@@ -278,8 +295,10 @@ async def _refresh_loader() -> None:
 
     cfg_a = _registry[db_a_id]
     cfg_b = _registry[db_b_id]
-    a_rows = await _row_count(db_a_id, cfg_a)
-    b_rows = await _row_count(db_b_id, cfg_b)
+    # Never query the databases mid-benchmark; serve the cached counts.
+    probe = not state["running"]
+    a_rows = await _row_count(db_a_id, cfg_a, probe)
+    b_rows = await _row_count(db_b_id, cfg_b, probe)
     state["loader"]["db_a_rows"] = a_rows
     state["loader"]["db_b_rows"] = b_rows
 
@@ -379,7 +398,9 @@ logging.getLogger("uvicorn.access").addFilter(_PollFilter())
 async def get_databases():
     """List all available databases."""
     db_list = list_databases(_registry)
-    # Add runtime status and row counts
+    # The dashboard polls this endpoint, so it must not query the databases
+    # while a benchmark is running — cached counts only.
+    probe = not state["running"]
     for db in db_list:
         db_id = db["id"]
         cfg = _registry.get(db_id, {})
@@ -388,15 +409,7 @@ async def get_databases():
         except Exception:
             db["running"] = False
         db["selected"] = db_id in (state["selected"]["db_a"], state["selected"]["db_b"])
-        # Row count
-        if db["running"]:
-            try:
-                runner = get_runner(db_id, _registry)
-                db["rows"] = await runner.get_row_count()
-            except Exception:
-                db["rows"] = 0
-        else:
-            db["rows"] = 0
+        db["rows"] = await _row_count(db_id, cfg, probe) if db["running"] else 0
     return db_list
 
 
@@ -573,6 +586,17 @@ async def _setup_databases(db_a: str, db_b: str, files: int = 1) -> None:
         n_a = len(_queries_a)
         n_b = len(_queries_b)
 
+        # ClickBench queries are compared strictly positionally: row i shows
+        # A's query i beside B's query i under one label. If the two files
+        # disagree on length (upstream commenting out a query is enough), every
+        # row after that point silently compares different SQL — and the chart
+        # and CSV export inherit the misalignment. Refuse rather than mislead.
+        if n_a != n_b:
+            raise RuntimeError(
+                f"Query count mismatch: {repo_a} has {n_a}, {repo_b} has {n_b}. "
+                f"Refusing to run — positional comparison would pair different queries."
+            )
+
         # Use min query count and shared labels
         labels = QUERY_LABELS[:max(n_a, n_b)]
         while len(labels) < max(n_a, n_b):
@@ -678,19 +702,42 @@ async def stop_benchmark():
 
 @app.post("/loader/reload")
 async def reload_loader(files: int = 1):
+    """Re-download the dataset and reload it into the selected databases.
+
+    This used to only re-download parquet files while the dashboard button was
+    labelled "Load Data" and reported "Done" on completion. Because the row
+    counts were still non-zero and the previous load was still marked complete,
+    the UI went straight back to "Ready" — so asking for 10 files left you
+    benchmarking the 1 file you already had.
+    """
+    global _setup_task, _load_complete
     files = max(1, min(10, files))
 
     await _stop_benchmark_internal()
+    if _setup_task is not None and not _setup_task.done():
+        _setup_task.cancel()
+        await asyncio.gather(_setup_task, return_exceptions=True)
+    _setup_task = None
+    _load_complete = False
 
     state["loader"]["ready"] = False
     state["loader"]["error"] = None
-    state["loader"]["message"] = f"Reloading {files} parquet file(s)..."
 
+    db_a = state["selected"]["db_a"]
+    db_b = state["selected"]["db_b"]
+    if db_a and db_b and db_a in _registry and db_b in _registry:
+        state["loader"]["message"] = f"Reloading {files} file(s) into both databases..."
+        _setup_task = asyncio.create_task(_setup_databases(db_a, db_b, files))
+        return {"status": "started", "files": files, "db_a": db_a, "db_b": db_b}
+
+    # Nothing selected yet — just make sure the files are on disk.
+    state["loader"]["message"] = f"Downloading {files} parquet file(s)..."
     try:
         async with httpx.AsyncClient(timeout=5) as client:
             r = await client.post(f"{LOADER_URL}/reload?files={files}")
             return r.json()
     except Exception as exc:
+        state["loader"]["error"] = str(exc)
         return {"status": "error", "message": str(exc)}
 
 
@@ -795,29 +842,23 @@ async def validate_data():
     # Run checksum query: SUM(RegionID) FROM hits
     checksum_sql = "SELECT SUM(RegionID) FROM hits"
 
-    async def _get_checksum(runner: DBRunner, db_id: str) -> Optional[int]:
-        """Get checksum using the runner's execute_query after a temporary connect."""
+    async def _get_checksum(db_id: str) -> Optional[int]:
+        """Checksum for one database, or None if the query didn't succeed.
+
+        Uses fetch_scalar rather than temporarily rewriting the runner's
+        row_count_query: that config dict used to be the registry's own object,
+        so the override leaked to every other runner for that database and a
+        concurrent status poll would read SUM(RegionID) as the row count. It
+        also lets a failure stay distinguishable from a genuine 0 — get_row_count
+        reports both as 0, which made two broken databases look like a match.
+        """
         try:
-            await runner.connect()
-            # Use a simple approach: get_row_count pattern but with checksum query
-            # We need to work with different runner types, so we use a config override trick
-            original_query = runner.config.get("row_count_query")
-            runner.config["row_count_query"] = checksum_sql
-            try:
-                # get_row_count uses row_count_query from config
-                checksum = await runner.get_row_count()
-                return checksum
-            finally:
-                if original_query is not None:
-                    runner.config["row_count_query"] = original_query
-                else:
-                    runner.config.pop("row_count_query", None)
-                await runner.close()
+            return await get_runner(db_id, _registry).fetch_scalar(checksum_sql)
         except Exception:
             return None
 
-    checksum_a = await _get_checksum(get_runner(db_a_id, _registry), db_a_id)
-    checksum_b = await _get_checksum(get_runner(db_b_id, _registry), db_b_id)
+    checksum_a = await _get_checksum(db_a_id)
+    checksum_b = await _get_checksum(db_b_id)
 
     result["db_a"]["checksum"] = checksum_a
     result["db_b"]["checksum"] = checksum_b
@@ -833,8 +874,12 @@ async def validate_data():
         else:
             result["checksum_match"] = True
     else:
+        # A checksum that couldn't be computed is not a passing checksum.
         result["checksum_match"] = None
-        if result["valid"]:
-            result["message"] = "Could not verify checksums."
+        result["valid"] = False
+        failed = [
+            db for db, c in ((db_a_id, checksum_a), (db_b_id, checksum_b)) if c is None
+        ]
+        result["message"] = f"Could not verify checksums for: {', '.join(failed)}"
 
     return result

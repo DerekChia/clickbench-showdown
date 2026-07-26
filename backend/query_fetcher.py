@@ -23,6 +23,11 @@ CLICKBENCH_RAW_URL = (
 CACHE_DIR = os.environ.get("QUERY_CACHE_DIR", "/tmp/clickbench_query_cache")
 CACHE_TTL_SEC = 24 * 3600  # 24 hours
 
+# In-repo snapshot of the pinned commit's queries, used when GitHub is
+# unreachable and nothing is cached — otherwise a fresh clone on an air-gapped
+# or proxied network can never get past "Setup failed".
+BUNDLED_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "queries_bundled")
+
 QUERY_LABELS = [
     "Total row count",
     "Count where AdvEngineID != 0",
@@ -89,26 +94,38 @@ NUM_QUERIES = 43
 
 
 def _cache_path(repo_path: str) -> str:
-    os.makedirs(CACHE_DIR, exist_ok=True)
     safe_name = repo_path.replace("/", "_").replace("\\", "_")
     # Commit is part of the filename so re-pinning invalidates old caches.
     return os.path.join(CACHE_DIR, f"{safe_name}_{CLICKBENCH_COMMIT[:12]}_queries.sql")
 
 
 def _read_cache(repo_path: str) -> list[str] | None:
-    """Read queries from cache if fresh enough."""
-    path = _cache_path(repo_path)
-    if not os.path.exists(path):
+    """Read queries from cache if fresh enough. Never raises."""
+    try:
+        path = _cache_path(repo_path)
+        if not os.path.exists(path):
+            return None
+        if time.time() - os.path.getmtime(path) > CACHE_TTL_SEC:
+            return None
+        return _parse_file(path)
+    except OSError:
         return None
-    age = time.time() - os.path.getmtime(path)
-    if age > CACHE_TTL_SEC:
-        return None
-    return _parse_file(path)
 
 
 def _read_stale_cache(repo_path: str) -> list[str] | None:
-    """Read queries from cache regardless of age (fallback)."""
-    path = _cache_path(repo_path)
+    """Read queries from cache regardless of age (fallback). Never raises."""
+    try:
+        path = _cache_path(repo_path)
+        if not os.path.exists(path):
+            return None
+        return _parse_file(path)
+    except OSError:
+        return None
+
+
+def _read_bundled(repo_path: str) -> list[str] | None:
+    """Read the in-repo snapshot for a database, if one was shipped."""
+    path = os.path.join(BUNDLED_DIR, repo_path, "queries.sql")
     if not os.path.exists(path):
         return None
     return _parse_file(path)
@@ -135,9 +152,13 @@ def _parse_queries(content: str) -> list[str]:
 
 
 def _write_cache(repo_path: str, content: str) -> None:
-    path = _cache_path(repo_path)
-    with open(path, "w") as f:
-        f.write(content)
+    """Best-effort cache write — an unwritable cache dir must not be fatal."""
+    try:
+        os.makedirs(CACHE_DIR, exist_ok=True)
+        with open(_cache_path(repo_path), "w") as f:
+            f.write(content)
+    except OSError as e:
+        print(f"[queries] Could not cache queries for '{repo_path}': {e}", flush=True)
 
 
 async def fetch_queries(repo_path: str) -> list[str]:
@@ -145,7 +166,8 @@ async def fetch_queries(repo_path: str) -> list[str]:
     Fetch queries for a database from the ClickBench repo.
 
     Returns a list of 43 SQL query strings.
-    Uses disk cache with 24h TTL, falls back to stale cache if GitHub is unreachable.
+
+    Resolution order: fresh cache -> GitHub -> stale cache -> in-repo snapshot.
     """
     # Try fresh cache first
     cached = _read_cache(repo_path)
@@ -166,6 +188,15 @@ async def fetch_queries(repo_path: str) -> list[str]:
         stale = _read_stale_cache(repo_path)
         if stale is not None:
             return stale
+        # Then the snapshot shipped in the repo, so the app still runs offline.
+        bundled = _read_bundled(repo_path)
+        if bundled is not None:
+            print(
+                f"[queries] GitHub unreachable — using bundled snapshot for '{repo_path}'",
+                flush=True,
+            )
+            return bundled
         raise RuntimeError(
-            f"Cannot fetch queries for '{repo_path}' from GitHub and no cache available"
+            f"Cannot fetch queries for '{repo_path}' from GitHub, and neither a "
+            f"cache nor a bundled snapshot is available"
         )

@@ -77,8 +77,23 @@ class DBRunner(ABC):
         ...
 
     @abstractmethod
-    async def get_row_count(self) -> int:
+    async def fetch_scalar(self, sql: str) -> int:
+        """Run a one-value query on a short-lived connection. Raises on failure.
+
+        Callers that need to tell "the query failed" apart from "the answer is
+        genuinely 0" — /validate's checksum comparison, for one — must use this
+        rather than get_row_count(), which reports both as 0.
+        """
         ...
+
+    async def get_row_count(self) -> int:
+        """Row count, or 0 if it can't be determined."""
+        try:
+            return await self.fetch_scalar(
+                self.config.get("row_count_query", "SELECT count(*) FROM hits")
+            )
+        except Exception:
+            return 0
 
     async def run_pass(
         self,
@@ -186,20 +201,17 @@ class HTTPRunner(DBRunner):
             raise RuntimeError(f"HTTP error {resp.status_code}: {resp.text[:200]}")
         return elapsed
 
-    async def get_row_count(self) -> int:
-        try:
-            async with httpx.AsyncClient(timeout=10) as client:
-                r = await client.post(
-                    self.url,
-                    params=self._params(),
-                    content=self.config.get("row_count_query", "SELECT count(*) FROM hits"),
-                    headers={"X-Query-Timeout": "10"},
-                )
-                if r.status_code == 200:
-                    return int(r.text.strip())
-        except Exception:
-            pass
-        return 0
+    async def fetch_scalar(self, sql: str) -> int:
+        async with httpx.AsyncClient(timeout=10) as client:
+            r = await client.post(
+                self.url,
+                params=self._params(),
+                content=sql,
+                headers={"X-Query-Timeout": "10"},
+            )
+            if r.status_code != 200:
+                raise RuntimeError(f"HTTP error {r.status_code}: {r.text[:200]}")
+            return int(r.text.strip())
 
 
 # ── PostgreSQL: asyncpg wire protocol ────────────────────────────────────────
@@ -248,16 +260,13 @@ class AsyncpgRunner(DBRunner):
             await self._reconnect()
             raise
 
-    async def get_row_count(self) -> int:
+    async def fetch_scalar(self, sql: str) -> int:
+        temp_conn = await asyncpg.connect(self.dsn)
         try:
-            temp_conn = await asyncpg.connect(self.dsn)
-            row = await temp_conn.fetchrow(
-                self.config.get("row_count_query", "SELECT count(*) FROM hits")
-            )
-            await temp_conn.close()
+            row = await temp_conn.fetchrow(sql)
             return int(row[0])
-        except Exception:
-            return 0
+        finally:
+            await temp_conn.close()
 
 
 # ── MySQL/MariaDB: aiomysql wire protocol ────────────────────────────────────
@@ -281,6 +290,26 @@ class AioMySQLRunner(DBRunner):
     async def connect(self) -> None:
         import aiomysql
         self._conn = await aiomysql.connect(**self._conn_params)
+        await self._apply_statement_timeout()
+
+    async def _apply_statement_timeout(self) -> None:
+        """Set the per-statement timeout once per connection.
+
+        This used to run inside execute_query's stopwatch, so every measurement
+        carried an extra round-trip — two on MariaDB, where the MySQL spelling
+        raises first. It's a session variable, so once at connect is enough.
+          MySQL:   max_execution_time (ms)
+          MariaDB: max_statement_time (seconds)
+        """
+        timeout_ms = int(TIMEOUT_SEC * 1000)
+        async with self._conn.cursor() as cur:
+            try:
+                await cur.execute(f"SET SESSION max_execution_time = {timeout_ms}")
+            except Exception:
+                try:
+                    await cur.execute(f"SET SESSION max_statement_time = {TIMEOUT_SEC:.3f}")
+                except Exception:
+                    pass  # neither dialect accepted it; client-side timeout still applies
 
     async def close(self) -> None:
         if self._conn:
@@ -300,24 +329,15 @@ class AioMySQLRunner(DBRunner):
     async def execute_query(self, sql: str, timeout_sec: float) -> float:
         if self._conn is None or self._conn.closed:
             await self._reconnect()
-        t0 = time.perf_counter()
         try:
             async with self._conn.cursor() as cur:
-                # Set per-query timeout:
-                #   MySQL uses max_execution_time (ms)
-                #   MariaDB uses max_statement_time (seconds)
-                timeout_ms = int(timeout_sec * 1000)
-                try:
-                    await cur.execute(
-                        f"SET SESSION max_execution_time = {timeout_ms}"
-                    )
-                except Exception:
-                    await cur.execute(
-                        f"SET SESSION max_statement_time = {timeout_sec:.0f}"
-                    )
+                # Stopwatch starts here — cursor setup and the session timeout
+                # are deliberately outside it, so this runner measures the same
+                # thing the HTTP and asyncpg runners do.
+                t0 = time.perf_counter()
                 await cur.execute(sql)
                 await cur.fetchall()
-            return (time.perf_counter() - t0) * 1000
+                return (time.perf_counter() - t0) * 1000
         except asyncio.TimeoutError:
             await self._reconnect()
             raise
@@ -330,25 +350,19 @@ class AioMySQLRunner(DBRunner):
             await self._reconnect()
             raise
 
-    async def get_row_count(self) -> int:
+    async def fetch_scalar(self, sql: str) -> int:
         import aiomysql
-        conn = None
+        conn = await aiomysql.connect(**self._conn_params)
         try:
-            conn = await aiomysql.connect(**self._conn_params)
             async with conn.cursor() as cur:
-                await cur.execute(
-                    self.config.get("row_count_query", "SELECT count(*) FROM hits")
-                )
+                await cur.execute(sql)
                 row = await cur.fetchone()
             return int(row[0])
-        except Exception:
-            return 0
         finally:
-            if conn is not None:
-                try:
-                    await conn.ensure_closed()
-                except Exception:
-                    pass
+            try:
+                await conn.ensure_closed()
+            except Exception:
+                pass
 
 
 # ── MonetDB: pymonetdb in thread executor ────────────────────────────────────
@@ -361,66 +375,106 @@ class MonetDBRunner(DBRunner):
         super().__init__(db_id, config)
         self._conn = None
 
-    async def connect(self) -> None:
+    def _new_conn(self):
         import pymonetdb
         conn = self.config["connection"]
-        loop = asyncio.get_event_loop()
-        self._conn = await loop.run_in_executor(
-            None,
-            lambda: pymonetdb.connect(
-                hostname=conn["host"],
-                port=int(conn["port"]),
-                username=conn["user"],
-                password=conn["password"],
-                database=conn["database"],
-            ),
+        return pymonetdb.connect(
+            hostname=conn["host"],
+            port=int(conn["port"]),
+            username=conn["user"],
+            password=conn["password"],
+            database=conn["database"],
         )
+
+    async def connect(self) -> None:
+        loop = asyncio.get_event_loop()
+        self._conn = await loop.run_in_executor(None, self._new_conn)
+        await loop.run_in_executor(None, self._set_query_timeout)
+
+    def _set_query_timeout(self) -> None:
+        """Ask the server to give up on long queries.
+
+        Best-effort only. Measured against MonetDB 11, a 25s query with
+        setquerytimeout(3) still ran ~29s before reporting "Query aborted due to
+        timeout" — the limit is enforced lazily, so it does not promptly free
+        the connection. Dropping and rebuilding the connection in
+        execute_query's error path is what actually keeps an abandoned query
+        from interleaving with the next one; this just stops the server from
+        working on it forever.
+        """
+        try:
+            cur = self._conn.cursor()
+            cur.execute(f"call sys.setquerytimeout({int(TIMEOUT_SEC)})")
+            cur.close()
+            self._conn.commit()
+        except Exception as e:
+            print(f"[bench] {self.db_id}: could not set server query timeout: {e}", flush=True)
 
     async def close(self) -> None:
         if self._conn:
-            self._conn.close()
+            try:
+                self._conn.close()
+            except Exception:
+                pass
             self._conn = None
 
+    async def _reconnect(self) -> None:
+        await self.close()
+        try:
+            await self.connect()
+        except Exception:
+            await asyncio.sleep(3)
+
     async def execute_query(self, sql: str, timeout_sec: float) -> float:
+        if self._conn is None:
+            await self._reconnect()
+            if self._conn is None:
+                raise RuntimeError(f"{self.db_id}: not connected")
+
         loop = asyncio.get_event_loop()
+        # Bind the connection now rather than reading self._conn inside the
+        # thread: after a timeout we swap in a new connection, and a thread that
+        # had not yet reached .cursor() would otherwise grab the replacement and
+        # corrupt the very stream the reconnect was meant to protect.
+        conn = self._conn
         t0 = time.perf_counter()
 
         def _run():
-            cur = self._conn.cursor()
-            cur.execute(sql)
-            cur.fetchall()
-            cur.close()
+            cur = conn.cursor()
+            try:
+                cur.execute(sql)
+                cur.fetchall()
+            finally:
+                cur.close()
 
-        await asyncio.wait_for(
-            loop.run_in_executor(None, _run),
-            timeout=timeout_sec + 1,
-        )
-        return (time.perf_counter() - t0) * 1000
-
-    async def get_row_count(self) -> int:
-        import pymonetdb
         try:
-            conn_cfg = self.config["connection"]
-            loop = asyncio.get_event_loop()
+            await asyncio.wait_for(
+                loop.run_in_executor(None, _run),
+                timeout=timeout_sec + 1,
+            )
+            return (time.perf_counter() - t0) * 1000
+        except Exception:
+            # wait_for abandons the future but cannot stop the thread, which may
+            # still be reading from this connection — and pymonetdb connections
+            # are not thread-safe. Retire it and build a fresh one.
+            await self._reconnect()
+            raise
 
-            def _count():
-                conn = pymonetdb.connect(
-                    hostname=conn_cfg["host"],
-                    port=int(conn_cfg["port"]),
-                    username=conn_cfg["user"],
-                    password=conn_cfg["password"],
-                    database=conn_cfg["database"],
-                )
+    async def fetch_scalar(self, sql: str) -> int:
+        loop = asyncio.get_event_loop()
+
+        def _run():
+            conn = self._new_conn()
+            try:
                 cur = conn.cursor()
-                cur.execute(self.config.get("row_count_query", "SELECT count(*) FROM hits"))
+                cur.execute(sql)
                 row = cur.fetchone()
                 cur.close()
-                conn.close()
                 return int(row[0])
+            finally:
+                conn.close()
 
-            return await loop.run_in_executor(None, _count)
-        except Exception:
-            return 0
+        return await loop.run_in_executor(None, _run)
 
 
 # ── Runner factory ───────────────────────────────────────────────────────────

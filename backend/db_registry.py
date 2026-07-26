@@ -47,11 +47,16 @@ def scan_databases() -> dict[str, dict]:
 
 
 def get_runner(db_id: str, registry: dict[str, dict]) -> DBRunner:
-    """Create a runner for the given db_id using its config from the registry."""
+    """Create a runner for the given db_id using its config from the registry.
+
+    The runner gets a copy: handing it the registry's own dict meant anything
+    that wrote to runner.config mutated shared global state seen by every other
+    runner for that database.
+    """
     config = registry.get(db_id)
     if config is None:
         raise ValueError(f"Unknown database: {db_id}")
-    return create_runner(db_id, config)
+    return create_runner(db_id, dict(config))
 
 
 def list_databases(registry: dict[str, dict]) -> list[dict]:
