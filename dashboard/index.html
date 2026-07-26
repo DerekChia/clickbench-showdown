@@ -19,14 +19,19 @@
     --green:  #4ADA90;
     --red:    #E87C7C;
     --yellow: #E8D07C;
-    --mu:     #6A8BA8;
+    /* Muted text. #6A8BA8 measured 4.41:1 on --panel and 3.88:1 on --card,
+       below WCAG AA for the 9-10px labels it carries. This clears 4.5:1 on
+       every surface it is used on (worst case 5.22:1, on --card). */
+    --mu:     #7FA3C0;
     --txt:    #E8E2D9;
     --mono:   'JetBrains Mono', monospace;
     --serif:  'DM Serif Display', serif;
     --sans:   'DM Sans', sans-serif;
   }
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-  html { font-size: 14px; }
+  /* Relative, not 14px: this still renders at 14px on a default browser but
+     scales with a raised root size instead of overriding the preference. */
+  html { font-size: 87.5%; }
   body {
     background: var(--bg);
     color: var(--txt);
@@ -94,6 +99,14 @@
   }
   button:active { transform: scale(.97); }
   button:disabled { opacity: .4; cursor: not-allowed; transform: none; }
+
+  /* Visible focus for every interactive element. Without this the header's
+     buttons and the expandable query rows gave keyboard users no indication
+     of where focus was. */
+  :where(button, select, a, [role="button"]):focus-visible {
+    outline: 2px solid var(--color-a);
+    outline-offset: 2px;
+  }
   .btn-start { background: var(--color-a); color: #0D1B26; }
   .btn-stop  { background: var(--red);  color: #0D1B26; }
 
@@ -107,7 +120,8 @@
     font-size: .78rem;
     cursor: pointer;
   }
-  .db-select:focus, .files-select:focus { outline: none; border-color: var(--color-a); }
+  /* Border tint on focus, but the outline above is left intact. */
+  .db-select:focus, .files-select:focus { border-color: var(--color-a); }
   .btn-apply {
     background: transparent;
     color: var(--color-a);
@@ -177,7 +191,6 @@
   }
   @keyframes spin { to { transform: rotate(360deg); } }
   #loader-banner p { font-size: .82rem; color: var(--amber); font-family: var(--mono); }
-  #loader-banner.ready { border-left-color: var(--green); display: none; }
 
   /* ── Database status bar ─────────────────────────────────────────────────── */
   #db-status-bar {
@@ -202,14 +215,17 @@
     border-radius: 50%;
     flex-shrink: 0;
   }
-  .db-chip .db-name { color: var(--fg); font-weight: 600; }
+  .db-chip .db-name { color: var(--txt); font-weight: 600; }
   .db-chip .db-rows { color: var(--mu); }
   .db-chip.selected { border-color: var(--color-a); }
 
   /* ── Summary cards ───────────────────────────────────────────────────────── */
   .summary-grid {
     display: grid;
-    grid-template-columns: repeat(5, 1fr);
+    /* auto-fit rather than a hard 5 columns: card labels are driven by database
+       names ("TimescaleDB Total Runs"), so fixed tracks made the long ones wrap
+       and knocked the value baselines out of alignment across the row. */
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
     gap: 12px;
     margin-bottom: 18px;
   }
@@ -226,6 +242,7 @@
     text-transform: uppercase;
     letter-spacing: .08em;
     margin-bottom: 6px;
+    min-height: 2.1em;  /* reserve two lines so values stay baseline-aligned */
   }
   .summary-card .value {
     font-family: var(--serif);
@@ -264,7 +281,10 @@
     background: var(--panel);
     border: 1px solid var(--bdr);
     border-radius: 10px;
-    overflow: hidden;
+    /* `clip`, not `hidden`: both round off the corners, but `hidden` creates a
+       scroll container, which makes the sticky <thead> stick to the top of this
+       box (and scroll away with it) instead of to the viewport. */
+    overflow: clip;
     margin-bottom: 20px;
   }
   .table-header-bar {
@@ -282,7 +302,7 @@
     color: var(--mu);
   }
   .col-hint {
-    font-size: .68rem;
+    font-size: .7rem;
     font-family: var(--mono);
     color: var(--mu);
   }
@@ -296,7 +316,7 @@
     padding: 8px 12px;
     text-align: left;
     font-family: var(--mono);
-    font-size: .68rem;
+    font-size: .7rem;
     font-weight: 500;
     text-transform: uppercase;
     letter-spacing: .08em;
@@ -304,7 +324,50 @@
     border-bottom: 1px solid var(--bdr);
     background: var(--panel);
     white-space: nowrap;
+    /* Sticky, so column identity survives scrolling 43 rows of 16 columns.
+       The offsets are measured at runtime into --header-h / --head1-h because
+       the page header wraps at narrow widths. */
+    position: sticky;
+    z-index: 10;
   }
+  thead tr.head-group th { top: var(--header-h, 76px); }
+  thead tr:not(.head-group) th {
+    top: calc(var(--header-h, 76px) + var(--head1-h, 30px));
+    box-shadow: 0 1px 0 var(--bdr);
+  }
+  /* An `overflow` value other than visible on ANY ancestor makes that ancestor
+     the scroll container for the sticky <thead> — it would then stick to the
+     top of this box, which never scrolls vertically, i.e. never stick at all.
+     Above the width where the 16-column table fits, drop the scroll container
+     so the header sticks to the viewport. Below it, horizontal scrolling is
+     the more important of the two and sticky degrades away. */
+  .table-scroll { overflow-x: auto; }
+  @media (min-width: 1200px) {
+    .table-scroll { overflow-x: visible; }
+  }
+
+  th.grouphead {
+    font-size: .78rem;
+    font-weight: 600;
+    letter-spacing: .06em;
+    border-bottom: 1px solid var(--bdr);
+  }
+
+  th.sortable { cursor: pointer; user-select: none; }
+  th.sortable:hover { color: var(--txt); }
+  th.sortable::after {
+    content: '↕';
+    opacity: .35;
+    margin-left: 5px;
+    font-size: .8em;
+  }
+  th.sortable[aria-sort="ascending"]::after  { content: '↑'; opacity: 1; color: var(--color-a); }
+  th.sortable[aria-sort="descending"]::after { content: '↓'; opacity: 1; color: var(--color-a); }
+
+  /* Zebra banding on every other data row. nth-of-type(4n+1) rather than
+     nth-child(odd) because each query owns two <tr>s (data + expand), and it
+     re-evaluates after the rows are reordered by sorting. */
+  tbody tr.data-row:nth-of-type(4n+1) { background: rgba(255,255,255,.032); }
   thead th.dba  { color: var(--color-a); }
   thead th.dbb  { color: var(--color-b); }
   thead th.ctr { text-align: center; }
@@ -417,7 +480,7 @@
     background: #0D1B26;
   }
   .sql-db-label {
-    font-size: .65rem;
+    font-size: .7rem;
     font-family: var(--mono);
     text-transform: uppercase;
     letter-spacing: .1em;
@@ -446,7 +509,7 @@
     position: absolute;
     top: 6px;
     right: 7px;
-    font-size: .6rem;
+    font-size: .7rem;
     font-family: var(--mono);
     padding: 2px 7px;
     background: var(--bdr);
@@ -456,13 +519,13 @@
     cursor: pointer;
     transition: background .15s, color .15s;
   }
-  .btn-copy:hover { background: #2a3f55; color: var(--fg); }
+  .btn-copy:hover { background: #2a3f55; color: var(--txt); }
   .exec-cmd {
     background: #0a1520;
     border: 1px solid var(--bdr);
     border-radius: 6px;
     padding: 8px 36px 8px 14px;
-    font-size: .68rem;
+    font-size: .7rem;
     font-family: var(--mono);
     color: var(--mu);
     white-space: pre-wrap;
@@ -472,10 +535,11 @@
     position: relative;
   }
   .exec-cmd-label {
-    font-size: .6rem;
+    /* Was .6rem at opacity .6, which composited to 2.58:1 — below AA even for
+       large text, on the only instructional copy in the expanded view. */
+    font-size: .7rem;
     font-family: var(--mono);
     color: var(--mu);
-    opacity: .6;
     margin-top: 10px;
     margin-bottom: 3px;
     text-transform: uppercase;
@@ -494,7 +558,7 @@
     padding: 12px;
   }
   .expand-chart-box h4 {
-    font-size: .68rem;
+    font-size: .7rem;
     font-family: var(--mono);
     color: var(--mu);
     text-transform: uppercase;
@@ -522,6 +586,26 @@
     margin-top: 32px;
   }
   footer a { color: var(--color-a); text-decoration: none; }
+
+  /* ── Reduced motion ──────────────────────────────────────────────────────── */
+  /* This dashboard is meant to be left running for hours, with a blinking cell
+     for every in-flight query plus a pulsing status dot and a spinning loader —
+     the worst case for motion sensitivity. Honour the OS preference. */
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after {
+      animation-duration: .001ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: .001ms !important;
+    }
+    /* The spinner would freeze mid-rotation; make it a static ring instead.
+       The banner always carries a text message alongside it. */
+    #loader-banner .spinner {
+      border-top-color: var(--amber);
+      border-right-color: var(--amber);
+    }
+    /* Blink conveys "running" — keep that readable without animating. */
+    .t-running, .ic-run { text-decoration: underline; text-underline-offset: 2px; }
+  }
 </style>
 </head>
 <body>
@@ -536,13 +620,16 @@
     <span id="dot" class="dot"></span>
     <span id="run-label" style="font-size:.78rem;color:var(--mu);font-family:var(--mono)">idle</span>
     <span id="active-db-badge" style="display:none;font-size:.72rem;font-family:var(--mono);padding:3px 10px;border-radius:4px;font-weight:600"></span>
-    <div style="width:1px;height:20px;background:var(--bdr)"></div>
-    <select id="db-a-select" class="db-select" title="Database A"></select>
-    <span class="vs-label">vs</span>
-    <select id="db-b-select" class="db-select" title="Database B"></select>
-    <button id="btn-apply" class="btn-apply" onclick="applySelection()">Apply</button>
-    <div style="width:1px;height:20px;background:var(--bdr)"></div>
-    <select id="files-select" class="files-select">
+    <div style="width:1px;height:20px;background:var(--bdr)" aria-hidden="true"></div>
+    <div role="group" aria-label="Database selection" style="display:flex;align-items:center;gap:12px">
+      <select id="db-a-select" class="db-select" title="Database A" aria-label="Database A"></select>
+      <span class="vs-label" aria-hidden="true">vs</span>
+      <select id="db-b-select" class="db-select" title="Database B" aria-label="Database B"></select>
+      <button id="btn-apply" class="btn-apply" onclick="applySelection()">Apply</button>
+    </div>
+    <div style="width:1px;height:20px;background:var(--bdr)" aria-hidden="true"></div>
+    <div role="group" aria-label="Dataset size" style="display:flex;align-items:center;gap:12px">
+    <select id="files-select" class="files-select" title="Parquet files to load" aria-label="Number of parquet files to load">
       <option value="1" selected>1 file</option>
       <option value="2">2 files</option>
       <option value="3">3 files</option>
@@ -555,11 +642,14 @@
       <option value="10">10 files</option>
     </select>
     <button id="btn-reload" class="btn-reload" onclick="reloadData()" disabled>Load Data</button>
-    <span id="reload-msg" class="reload-msg"></span>
-    <div style="width:1px;height:20px;background:var(--bdr)"></div>
+    </div>
+    <!-- role=status so errors and progress are announced instead of being
+         delivered through a blocking alert() -->
+    <span id="reload-msg" class="reload-msg" role="status" aria-live="polite"></span>
+    <div style="width:1px;height:20px;background:var(--bdr)" aria-hidden="true"></div>
     <button id="btn-start" class="btn-start" onclick="startBench()" disabled>Start</button>
     <button id="btn-stop"  class="btn-stop"  onclick="stopBench()" disabled>Stop</button>
-    <div style="width:1px;height:20px;background:var(--bdr)"></div>
+    <div style="width:1px;height:20px;background:var(--bdr)" aria-hidden="true"></div>
     <button id="btn-export" class="btn-export" onclick="exportCSV()" disabled>Export CSV</button>
   </div>
 </header>
@@ -643,26 +733,37 @@
       <h2>ClickBench Queries - Live Results</h2>
       <span class="col-hint">Click a row to expand SQL + charts</span>
     </div>
-    <div style="overflow-x:auto">
+    <div class="table-scroll">
     <table>
+      <!-- Two-level header: the database name is stated once per side instead
+           of being truncated to six characters and repeated across six columns
+           ("TIMESC P50", "TIMESC P90", ...). -->
       <thead>
+        <tr class="head-group">
+          <th rowspan="2" class="sortable" id="th-sort-num"
+              onclick="sortBy('num')" title="Sort by query number">#</th>
+          <th rowspan="2">Query</th>
+          <th colspan="6" class="dba ctr grouphead" id="th-a-name">Database A</th>
+          <th rowspan="2" style="width:8px"></th>
+          <th colspan="6" class="dbb ctr grouphead" id="th-b-name">Database B</th>
+          <th rowspan="2" class="ctr sortable" id="th-sort-spd"
+              onclick="sortBy('spd')" title="Sort by speedup">Speedup</th>
+        </tr>
         <tr>
-          <th>#</th>
-          <th>Query</th>
-          <th class="dba ctr" id="th-a-status">A<br/>status</th>
-          <th class="dba rt" id="th-a-p50">A p50</th>
-          <th class="dba rt" id="th-a-p90">A p90</th>
-          <th class="dba rt" id="th-a-p99">A p99</th>
-          <th class="dba ctr" id="th-a-runs">A runs</th>
-          <th class="dba ctr" id="th-a-trend">A trend</th>
-          <th style="width:8px"></th>
-          <th class="dbb ctr" id="th-b-status">B<br/>status</th>
-          <th class="dbb rt" id="th-b-p50">B p50</th>
-          <th class="dbb rt" id="th-b-p90">B p90</th>
-          <th class="dbb rt" id="th-b-p99">B p99</th>
-          <th class="dbb ctr" id="th-b-runs">B runs</th>
-          <th class="dbb ctr" id="th-b-trend">B trend</th>
-          <th class="ctr">Speedup</th>
+          <th class="dba ctr">status</th>
+          <th class="dba rt sortable" id="th-sort-ap50"
+              onclick="sortBy('ap50')" title="Sort by this column">p50</th>
+          <th class="dba rt">p90</th>
+          <th class="dba rt">p99</th>
+          <th class="dba ctr">runs</th>
+          <th class="dba ctr">trend</th>
+          <th class="dbb ctr">status</th>
+          <th class="dbb rt sortable" id="th-sort-bp50"
+              onclick="sortBy('bp50')" title="Sort by this column">p50</th>
+          <th class="dbb rt">p90</th>
+          <th class="dbb rt">p99</th>
+          <th class="dbb ctr">runs</th>
+          <th class="dbb ctr">trend</th>
         </tr>
       </thead>
       <tbody id="query-tbody"></tbody>
@@ -743,6 +844,75 @@ const $ = id => document.getElementById(id);
 
 function escHtml(s) {
   return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+const prefersReducedMotion = () =>
+  window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+// The sticky table header sits directly under the sticky page header, whose
+// height changes when the toolbar wraps — so measure rather than hardcode.
+function syncStickyOffsets() {
+  const header = document.querySelector('header');
+  const groupRow = document.querySelector('thead tr.head-group');
+  const root = document.documentElement.style;
+  if (header)   root.setProperty('--header-h', header.offsetHeight + 'px');
+  if (groupRow) root.setProperty('--head1-h', groupRow.offsetHeight + 'px');
+}
+
+// ── Sorting ───────────────────────────────────────────────────────────────────
+let sortState = { key: 'num', dir: 1 };
+
+function sortValue(i, key) {
+  const aQ = lastData?.db_a?.queries?.[i];
+  const bQ = lastData?.db_b?.queries?.[i];
+  switch (key) {
+    case 'ap50': return aQ?.p50_ms ?? null;
+    case 'bp50': return bQ?.p50_ms ?? null;
+    case 'spd':
+      return (aQ?.p50_ms > 0 && bQ?.p50_ms > 0) ? bQ.p50_ms / aQ.p50_ms : null;
+    default: return i;
+  }
+}
+
+function sortBy(key) {
+  if (sortState.key === key) sortState.dir = -sortState.dir;
+  else sortState = { key, dir: key === 'num' ? 1 : -1 };  // metrics default to worst-first
+  applySort();
+  updateSortIndicators();
+}
+
+function applySort() {
+  const tbody = $('query-tbody');
+  if (!tbody) return;
+  const { key, dir } = sortState;
+  const order = Array.from({ length: numQueries }, (_, i) => i).sort((x, y) => {
+    const vx = sortValue(x, key), vy = sortValue(y, key);
+    if (vx == null && vy == null) return x - y;
+    if (vx == null) return 1;          // no data always sinks, either direction
+    if (vy == null) return -1;
+    return vx === vy ? x - y : (vx - vy) * dir;
+  });
+  // appendChild moves existing nodes, so row listeners and any live Chart
+  // instances inside an expanded row survive the reorder. Each query owns two
+  // <tr>s, appended together to keep the detail row beneath its data row.
+  for (const i of order) {
+    const row = $(`row-${i}`), exp = $(`expand-${i}`);
+    if (row) tbody.appendChild(row);
+    if (exp) tbody.appendChild(exp);
+  }
+}
+
+function updateSortIndicators() {
+  const ids = { num: 'th-sort-num', ap50: 'th-sort-ap50', bp50: 'th-sort-bp50', spd: 'th-sort-spd' };
+  for (const [key, id] of Object.entries(ids)) {
+    const el = $(id);
+    if (!el) continue;
+    if (key === sortState.key) {
+      el.setAttribute('aria-sort', sortState.dir > 0 ? 'ascending' : 'descending');
+    } else {
+      el.removeAttribute('aria-sort');
+    }
+  }
 }
 
 function fmtRows(n) {
@@ -897,9 +1067,10 @@ async function applySelection() {
   const a = $('db-a-select').value;
   const b = $('db-b-select').value;
   if (a === b) {
-    alert('Please select two different databases.');
+    setReloadMsg('Please select two different databases.', 'err');
     return;
   }
+  setReloadMsg('');
   $('btn-apply').disabled = true;
   localStorage.setItem('showdown_selection', JSON.stringify({a, b}));
   try {
@@ -907,7 +1078,7 @@ async function applySelection() {
     const resp = await fetch(`${API}/select?db_a=${a}&db_b=${b}&files=${files}`, { method: 'POST' });
     const j = await resp.json();
     if (j.status === 'error') {
-      alert(j.message);
+      setReloadMsg(j.message || 'Could not apply selection.', 'err');
     } else {
       selectedA = a;
       selectedB = b;
@@ -920,7 +1091,7 @@ async function applySelection() {
       resetTableAndCharts();
     }
   } catch (_) {
-    alert('Could not reach backend.');
+    setReloadMsg('Could not reach backend.', 'err');
   }
   $('btn-apply').disabled = false;
 }
@@ -940,26 +1111,14 @@ function updateDBLabels() {
   $('dbb-label').textContent = `${nameB} Total Runs`;
   $('dba-to-label').textContent = `${nameA} Timeouts`;
   $('dbb-to-label').textContent = `${nameB} Timeouts`;
-  $('speedup-sub').textContent = `${nameA} faster than ${nameB} (p50)`;
+  $('speedup-sub').textContent = `${nameA} vs ${nameB} (p50, geometric mean)`;
   $('legend-a-name').textContent = nameA;
   $('legend-b-name').textContent = nameB;
   $('chart-title').textContent = `Speedup per Query - ${nameA} vs ${nameB} (p50)`;
 
-  // Table headers
-  const shortA = nameA.length > 6 ? nameA.substring(0, 6) : nameA;
-  const shortB = nameB.length > 6 ? nameB.substring(0, 6) : nameB;
-  $('th-a-status').innerHTML = `${shortA}<br/>status`;
-  $('th-a-p50').textContent = `${shortA} p50`;
-  $('th-a-p90').textContent = `${shortA} p90`;
-  $('th-a-p99').textContent = `${shortA} p99`;
-  $('th-a-runs').textContent = `${shortA} runs`;
-  $('th-a-trend').textContent = `${shortA} trend`;
-  $('th-b-status').innerHTML = `${shortB}<br/>status`;
-  $('th-b-p50').textContent = `${shortB} p50`;
-  $('th-b-p90').textContent = `${shortB} p90`;
-  $('th-b-p99').textContent = `${shortB} p99`;
-  $('th-b-runs').textContent = `${shortB} runs`;
-  $('th-b-trend').textContent = `${shortB} trend`;
+  // Table headers — full name once per side, no truncation needed.
+  $('th-a-name').textContent = nameA;
+  $('th-b-name').textContent = nameB;
 }
 
 async function fetchQuerySQL() {
@@ -989,26 +1148,37 @@ function buildTable() {
   const tbody = $('query-tbody');
   tbody.innerHTML = '';
   for (let i = 0; i < numQueries; i++) {
+    const label = LABELS[i] || 'Q' + (i + 1);
     const tr = document.createElement('tr');
     tr.id = `row-${i}`;
     tr.className = 'data-row';
-    tr.setAttribute('onclick', `toggleRow(${i})`);
+    // Real control semantics: the row was click-only, so the SQL, docker exec
+    // commands and per-query charts inside it were unreachable by keyboard.
+    tr.tabIndex = 0;
+    tr.setAttribute('role', 'button');
+    tr.setAttribute('aria-expanded', 'false');
+    tr.setAttribute('aria-controls', `expand-${i}`);
+    tr.setAttribute('aria-label', `Query ${i + 1}: ${label} — show details`);
+    tr.addEventListener('click', () => toggleRow(i));
+    tr.addEventListener('keydown', e => {
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleRow(i); }
+    });
     tr.innerHTML = `
       <td class="qnum">${i+1}</td>
-      <td class="qlabel">${LABELS[i] || 'Q'+(i+1)}</td>
+      <td class="qlabel" title="${escHtml(label)}">${escHtml(label)}</td>
       <td class="status-cell" id="dba-ic-${i}">·</td>
       <td class="time-cell" id="dba-p50-${i}">--</td>
       <td class="time-cell" id="dba-p90-${i}">--</td>
       <td class="time-cell" id="dba-p99-${i}">--</td>
       <td class="runs-cell" id="dba-run-${i}">0</td>
-      <td class="runs-cell" id="dba-spark-${i}"><canvas class="sparkline-canvas" id="spark-a-${i}" width="48" height="18"></canvas></td>
+      <td class="runs-cell" id="dba-spark-${i}"><canvas class="sparkline-canvas" aria-hidden="true" id="spark-a-${i}" width="48" height="18"></canvas></td>
       <td style="border-left:1px solid var(--bdr)"></td>
       <td class="status-cell" id="dbb-ic-${i}">·</td>
       <td class="time-cell" id="dbb-p50-${i}">--</td>
       <td class="time-cell" id="dbb-p90-${i}">--</td>
       <td class="time-cell" id="dbb-p99-${i}">--</td>
       <td class="runs-cell" id="dbb-run-${i}">0</td>
-      <td class="runs-cell" id="dbb-spark-${i}"><canvas class="sparkline-canvas" id="spark-b-${i}" width="48" height="18"></canvas></td>
+      <td class="runs-cell" id="dbb-spark-${i}"><canvas class="sparkline-canvas" aria-hidden="true" id="spark-b-${i}" width="48" height="18"></canvas></td>
       <td class="speedup-cell spd-na" id="spd-${i}">--</td>
     `;
     tbody.appendChild(tr);
@@ -1033,6 +1203,11 @@ function buildTable() {
     `;
     tbody.appendChild(expTr);
   }
+  // buildTable emits rows in query order; restore the active sort and remeasure
+  // the sticky offsets, since the header can rewrap when names change.
+  if (sortState.key !== 'num' || sortState.dir !== 1) applySort();
+  updateSortIndicators();
+  syncStickyOffsets();
 }
 
 function resetTableAndCharts() {
@@ -1060,6 +1235,8 @@ function updateRow(i, aQ, bQ) {
   const aIcEl = $(`dba-ic-${i}`);
   aIcEl.textContent = aIc;
   aIcEl.className = `status-cell ${aIcCls}`;
+  // The glyphs (✓ ✕ ! ·) announce as punctuation or are skipped entirely.
+  aIcEl.setAttribute('aria-label', `${nameA}: ${aQ.status}`);
 
   const aP50El = $(`dba-p50-${i}`);
   const aCls = timeCls(aQ.p50_ms, aQ.timeout_count > 0, aQ.status);
@@ -1077,6 +1254,7 @@ function updateRow(i, aQ, bQ) {
   const bIcEl = $(`dbb-ic-${i}`);
   bIcEl.textContent = bIc;
   bIcEl.className = `status-cell ${bIcCls}`;
+  bIcEl.setAttribute('aria-label', `${nameB}: ${bQ.status}`);
 
   const bP50El = $(`dbb-p50-${i}`);
   const bCls = timeCls(bQ.p50_ms, bQ.timeout_count > 0, bQ.status);
@@ -1118,7 +1296,7 @@ function initChart() {
     },
     options: {
       responsive: true,
-      animation: { duration: 400 },
+      animation: prefersReducedMotion() ? false : { duration: 400 },
       plugins: {
         legend: { display: false },
         tooltip: {
@@ -1127,6 +1305,11 @@ function initChart() {
             label: item => {
               const v = item.raw;
               if (v <= 0) return 'No data yet';
+              // A timed-out bar is a lower bound, not a measurement — say so
+              // rather than letting it read as a precise ratio.
+              if (chartKinds[item.dataIndex] === 'timeout') {
+                return `${nameB} timed out — at least ${v.toFixed(1)}x slower`;
+              }
               return `${nameA} is ${v.toFixed(1)}x faster than ${nameB}`;
             }
           },
@@ -1156,25 +1339,36 @@ function initChart() {
   });
 }
 
+// Per-bar provenance, read by the tooltip: 'measured' | 'timeout' | 'none'.
+let chartKinds = [];
+
 function updateChart(aQueries, bQueries) {
   if (!chart) return;
+  chartKinds = [];
   const data = aQueries.map((aQ, i) => {
     const bQ = bQueries[i];
-    if (!bQ) return 0;
-    // Timeout first: a timed-out query has p50_ms === null, so the old
-    // null-check ran ahead of this and made the branch unreachable — the chart
-    // showed "no data" for queries the Avg Speedup card was still counting.
+    if (!bQ) { chartKinds.push('none'); return 0; }
+    // Timeout first: a timed-out query has p50_ms === null, so a null-check
+    // ahead of this would make the branch unreachable.
     if (bQ.status === 'timeout' && aQ.p50_ms != null && aQ.p50_ms > 0) {
+      chartKinds.push('timeout');
+      // A lower bound: B took at least the timeout, so the true ratio is this
+      // or larger. Rendered in the timeout colour and labelled "at least".
       return Math.min(1000, 10000 / aQ.p50_ms);
     }
     // `!= null` rather than falsy, so a legitimate sub-millisecond p50 that
     // rounds to 0.0 isn't discarded.
-    if (aQ.p50_ms == null || bQ.p50_ms == null || aQ.p50_ms <= 0) return 0;
+    if (aQ.p50_ms == null || bQ.p50_ms == null || aQ.p50_ms <= 0) {
+      chartKinds.push('none');
+      return 0;
+    }
+    chartKinds.push('measured');
     return Math.max(0, bQ.p50_ms / aQ.p50_ms);
   });
   chart.data.datasets[0].data = data;
-  chart.data.datasets[0].backgroundColor = data.map(v => {
-    if (v <= 0)  return 'rgba(106,139,168,0.4)';
+  chart.data.datasets[0].backgroundColor = data.map((v, i) => {
+    if (chartKinds[i] === 'timeout') return 'rgba(232,124,124,0.7)';  // --red
+    if (v <= 0)  return 'rgba(127,163,192,0.4)';
     if (v >= 10) return 'rgba(74,191,184,0.75)';
     if (v >= 3)  return 'rgba(74,218,144,0.65)';
     return 'rgba(232,208,124,0.65)';
@@ -1190,6 +1384,9 @@ let prevRuns  = Array.from({length: numQueries}, () => ({a:0, b:0}));
 
 function toggleRow(i) {
   const expRow = $(`expand-${i}`);
+  // Keep the row's expanded state exposed to assistive tech.
+  const trigger = $(`row-${i}`);
+  if (trigger) trigger.setAttribute('aria-expanded', String(!expandedRows.has(i)));
   if (expandedRows.has(i)) {
     expandedRows.delete(i);
     expRow.classList.remove('open');
@@ -1366,6 +1563,10 @@ function applyData(d) {
       $('loader-msg').textContent = `Row count mismatch: ${d.loader.db_a_rows.toLocaleString()} vs ${d.loader.db_b_rows.toLocaleString()}`;
     }
     $('btn-start').disabled = d.running || !rowsMatch;
+    // A greyed-out Start next to a green "Ready" banner gave no reason.
+    $('btn-start').title = d.running
+      ? 'Benchmark already running'
+      : (!rowsMatch ? 'Row counts differ by more than 1% between the two databases' : '');
     $('btn-stop').disabled  = !d.running;
   } else {
     banner.style.display = 'flex';
@@ -1442,7 +1643,7 @@ function applyData(d) {
     setTimeout(() => setReloadMsg('', ''), 4000);
   }
 
-  let aTO = 0, bTO = 0, speedups = [];
+  let aTO = 0, bTO = 0, speedups = [], timedOutPairs = 0;
   const aQueries = d.db_a.queries || [];
   const bQueries = d.db_b.queries || [];
   const n = Math.min(aQueries.length, bQueries.length);
@@ -1452,10 +1653,16 @@ function applyData(d) {
     const bQ = bQueries[i];
     aTO += aQ.timeout_count;
     bTO += bQ.timeout_count;
-    if (aQ.p50_ms && bQ.p50_ms && bQ.status !== 'timeout') {
+    // Only measured pairs contribute to the headline ratio. A timed-out query
+    // has no measured time — it took *at least* the timeout, an unbounded
+    // amount — so the old `10000 / aQ.p50_ms` was a fabricated point estimate
+    // averaged in beside real measurements. Timeouts are reported on their own
+    // cards instead.
+    if (aQ.p50_ms != null && aQ.p50_ms > 0 && bQ.p50_ms != null && bQ.p50_ms > 0
+        && aQ.status !== 'timeout' && bQ.status !== 'timeout') {
       speedups.push(bQ.p50_ms / aQ.p50_ms);
-    } else if (bQ.status === 'timeout' && aQ.p50_ms) {
-      speedups.push(10000 / aQ.p50_ms);
+    } else if (bQ.status === 'timeout') {
+      timedOutPairs++;
     }
     updateRow(i, aQ, bQ);
 
@@ -1482,10 +1689,20 @@ function applyData(d) {
   $('dbb-timeouts').textContent = bTO;
 
   if (speedups.length > 0) {
-    const avg = speedups.reduce((a,b)=>a+b,0) / speedups.length;
-    $('avg-speedup').textContent = avg.toFixed(1) + 'x';
+    // Geometric mean, not arithmetic. These are ratios, and an arithmetic mean
+    // is dominated by a single outlier — nine queries at ~1.0x plus one at
+    // 1000x averages to 101x arithmetically but 2.1x geometrically.
+    const geo = Math.exp(speedups.reduce((s, r) => s + Math.log(r), 0) / speedups.length);
+    $('avg-speedup').textContent = geo.toFixed(1) + 'x';
+    // Say what the number is actually built from.
+    let sub = `${nameA} vs ${nameB} — geo. mean of ${speedups.length} measured`;
+    if (timedOutPairs > 0) sub += `, ${timedOutPairs} timed out (excluded)`;
+    $('speedup-sub').textContent = sub;
   } else {
     $('avg-speedup').textContent = '--';
+    $('speedup-sub').textContent = timedOutPairs > 0
+      ? `No measured pairs — ${timedOutPairs} timed out`
+      : `${nameA} faster than ${nameB} (p50)`;
   }
 
   updateChart(aQueries, bQueries);
@@ -1539,7 +1756,7 @@ async function startBench() {
     const r = await fetch(`${API}/benchmark/start`, { method: 'POST' });
     const j = await r.json();
     if (j.status !== 'started') {
-      alert(j.message || 'Could not start benchmark.');
+      setReloadMsg(j.message || 'Could not start benchmark.', 'err');
       $('btn-start').disabled = false;
     }
   } catch (_) {
@@ -1668,6 +1885,14 @@ function updateSparklines() {
 
 // ── Init ──────────────────────────────────────────────────────────────────────
 (async function init() {
+  syncStickyOffsets();
+  // The toolbar rewraps as database names change, which moves the point the
+  // table header must stick to.
+  if (window.ResizeObserver) {
+    new ResizeObserver(syncStickyOffsets).observe(document.querySelector('header'));
+  }
+  window.addEventListener('resize', syncStickyOffsets);
+
   await fetchDatabases();
   await fetchQuerySQL();   // populates LABELS before the table is built
   buildTable();
