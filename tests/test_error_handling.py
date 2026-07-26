@@ -56,7 +56,8 @@ class MockRunner(DBRunner):
     async def execute_query(self, sql: str, timeout_sec: float) -> float:
         return await self._mock_execute(sql, timeout_sec)
 
-    async def get_row_count(self) -> int:
+    async def fetch_scalar(self, sql: str) -> int:
+        # get_row_count() is now shared in the base class and delegates here.
         return 0
 
 

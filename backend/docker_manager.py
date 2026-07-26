@@ -56,6 +56,11 @@ def _ensure_running_sync(db_id: str, config: dict) -> None:
         container = client.containers.get(name)
         if container.status == "running":
             _ensure_network(client, container, name)
+            # Still wait for health. "running" only means the process started —
+            # PostgreSQL may be re-initialising and MySQL takes 30-60s to
+            # bootstrap, and returning early here handed callers a database that
+            # rejects connections with "the database system is starting up".
+            _wait_healthy(client, name, docker_cfg)
             return
         # Exists but not running — try to start it
         try:

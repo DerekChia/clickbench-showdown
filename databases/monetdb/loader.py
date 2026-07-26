@@ -70,18 +70,28 @@ def _parquet_to_csv(path: str, out_path: str) -> int:
 
 
 def _copy_to_container(container_name: str, local_path: str, container_dir: str) -> None:
-    """Copy a file into a Docker container."""
+    """Copy a file into a Docker container.
+
+    The tar is staged on disk next to the source rather than built in a
+    BytesIO. These CSVs run to hundreds of MB each, and holding the whole
+    archive in RAM while Docker streams its own copy is enough to OOM the
+    loader under Docker Desktop's default container memory limit — and with
+    --files 10 it happens ten times over.
+    """
     import docker
     import tarfile
-    import io
+    import tempfile
 
     client = docker.from_env()
     container = client.containers.get(container_name)
-    tar_stream = io.BytesIO()
-    with tarfile.open(fileobj=tar_stream, mode='w') as tar:
-        tar.add(local_path, arcname=os.path.basename(local_path))
-    tar_stream.seek(0)
-    container.put_archive(container_dir, tar_stream)
+    with tempfile.NamedTemporaryFile(
+        suffix=".tar", dir=os.path.dirname(local_path)
+    ) as tmp:
+        with tarfile.open(fileobj=tmp, mode="w") as tar:
+            tar.add(local_path, arcname=os.path.basename(local_path))
+        tmp.flush()
+        tmp.seek(0)
+        container.put_archive(container_dir, tmp)
 
 
 def load(parquet_dir: str, num_files: int, config: dict) -> int:

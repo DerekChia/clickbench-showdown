@@ -1,0 +1,16 @@
+{
+  "review_id": "dashboard_index_20260726_083624",
+  "target": "dashboard/index.html",
+  "focus_areas": ["visual", "usability"],
+  "context": "Data display (live benchmark dashboard: metrics, percentile table, charts)",
+  "platform": "desktop",
+  "status": "complete",
+  "started_at": "2026-07-26T00:36:24Z",
+  "issues_found": 13,
+  "severity_counts": {
+    "critical": 1,
+    "major": 5,
+    "minor": 5,
+    "suggestion": 2
+  }
+}
